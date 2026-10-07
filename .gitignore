@@ -1,8 +1,16 @@
 apps-script
 cloudflare-worker
 node_modules
+docs
+request_img
 dist
 member_management_project.pdf
 .env
 .env.local
 .DS_Store
+!apps-script/
+!apps-script/**
+!cloudflare-worker/
+!cloudflare-worker/**
+!docs/
+!docs/**
