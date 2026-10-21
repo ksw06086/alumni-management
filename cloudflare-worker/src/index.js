@@ -1,5 +1,6 @@
 export default {
   async fetch(request, env) {
+    // 브라우저 요청은 허용 Origin, 메서드, Content-Type을 먼저 검사한 뒤 Apps Script로 전달합니다.
     const origin = request.headers.get('Origin') || '';
     const allowedOrigins = String(env.ALLOWED_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean);
     const allowed = allowedOrigins.includes(origin);
@@ -10,6 +11,7 @@ export default {
     if (!allowed) return json({ ok: false, error: '허용되지 않은 출처입니다.' }, 403);
     if (request.method !== 'POST') return json({ ok: false, error: 'POST 요청만 허용됩니다.' }, 405, origin);
     if (!request.headers.get('Content-Type')?.toLowerCase().includes('application/json')) return json({ ok: false, error: 'JSON 요청만 허용됩니다.' }, 415, origin);
+    // Apps Script 주소와 비밀 설정은 Worker 환경에서만 읽어 클라이언트 번들에 노출하지 않습니다.
     const target = env.APPS_SCRIPT_URL;
     if (!target || target.includes('REPLACE_WITH')) return json({ ok: false, error: 'Cloudflare Worker의 APPS_SCRIPT_URL이 설정되지 않았습니다.' }, 503, origin);
     const body = await request.text();
@@ -25,9 +27,11 @@ export default {
 };
 
 function corsHeaders(origin) {
+  // 허용된 단일 Origin에만 CORS 응답 헤더를 붙입니다.
   return { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Vary': 'Origin' };
 }
 function securityHeaders() {
+  // API 응답 캐시와 브라우저의 MIME 추측을 막는 기본 보안 헤더입니다.
   return { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
 }
 function json(value, status = 200, origin = '') {

@@ -78,6 +78,7 @@ class Sheet {
   getDataRange() { return { getValues: () => this.rows.map(row => [...row]) }; }
   getRange(row, column, rowCount = 1, columnCount = 1) {
     return {
+      getValues: () => Array.from({ length: rowCount }, (_, ri) => Array.from({ length: columnCount }, (_, ci) => this.rows[row - 1 + ri]?.[column - 1 + ci] ?? '')),
       setValues: values => values.forEach((line, ri) => {
         const targetRow = row - 1 + ri;
         while (this.rows.length <= targetRow) this.rows.push([]);
@@ -128,6 +129,13 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     assert.equal(app.call({ action: 'students', token: adminToken, year: '사용자목록' }).ok, false);
   });
 
+  await t.test('returns sheets added after the session was created', () => {
+    app.sheets.set('2026', new Sheet('2026'));
+    const result = app.call({ action: 'sheets', token: adminToken });
+    assert.equal(result.ok, true);
+    assert.ok(result.sheets.includes('2026'));
+  });
+
   await t.test('creates, validates, updates and deletes students', () => {
     const student = { graduationYear: '2025', studentId: 'S002', name: 'Lee', status: '진학자', gpa: '4.2', company: 'Grad School' };
     const created = app.call({ action: 'saveStudent', token: adminToken, year: '2025', create: true, student });
@@ -135,6 +143,8 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     assert.equal(created.student.updatedAt.length > 0, true);
     assert.equal(app.call({ action: 'saveStudent', token: adminToken, year: '2025', create: true, student }).ok, false, 'duplicate student IDs are rejected on create');
     assert.equal(app.call({ action: 'saveStudent', token: adminToken, year: '2025', create: true, student: { ...student, studentId: 'S003', gpa: '5.0' } }).ok, false);
+    assert.equal(app.call({ action: 'saveStudent', token: adminToken, year: '2025', create: true, student: { ...student, studentId: 'S004', status: '미조사자' } }).ok, false, 'removed statuses cannot be newly assigned');
+    assert.equal(app.call({ action: 'saveStudent', token: adminToken, year: '2025', create: true, student: { ...student, studentId: 'S005', status: '국비교육자' } }).ok, false, 'national training is no longer an assignable status');
     const updated = app.call({ action: 'saveStudent', token: adminToken, year: '2025', create: false, student: { ...student, name: 'Lee Updated' } });
     assert.equal(updated.ok, true);
     assert.equal(app.call({ action: 'deleteStudent', token: adminToken, year: '2025', studentId: 'S002' }).ok, true);
@@ -144,13 +154,80 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
   await t.test('aggregates statistics and returns newest logs to admins', () => {
     const stats = app.call({ action: 'statistics', token: adminToken });
     assert.equal(stats.ok, true);
-    assert.equal(stats.statistics[0].year, '2025');
-    assert.equal(stats.statistics[0].total, 1);
-    assert.equal(stats.statistics[0].counts['취업자'], 1);
+    const yearStats = stats.statistics.find(item => item.year === '2025');
+    assert.ok(yearStats);
+    assert.equal(yearStats.total, 1);
+    assert.equal(yearStats.counts['취업자'], 1);
     const logs = app.call({ action: 'logs', token: adminToken });
     assert.equal(logs.ok, true);
     assert.ok(logs.logs.some(log => log.action === '학생 등록'));
     assert.ok(logs.logs.some(log => log.action === '학생 삭제'));
+  });
+
+  await t.test('stores counseling separately, scopes by student, sorts newest first and preserves the original author', () => {
+    const student = { graduationYear: '2025', studentId: 'S002', name: 'Lee', status: '미취업자' };
+    assert.equal(app.call({ action: 'saveStudent', token: adminToken, year: '2025', create: true, student }).ok, true);
+    const older = app.call({ action: 'saveCounseling', token: adminToken, year: '2025', studentId: 'S001', counseling: { counseledAt: '2025-02-01T09:00', content: '첫 상담', authorName: 'Spoofed' } });
+    const newer = app.call({ action: 'saveCounseling', token: adminToken, year: '2025', studentId: 'S001', counseling: { counseledAt: '2025-03-01T09:00', content: '두 번째 상담' } });
+    assert.equal(older.ok, true, older.error);
+    assert.equal(newer.ok, true, newer.error);
+    assert.equal(older.counseling.authorName, 'Admin User', 'author comes from the authenticated session');
+    assert.ok(older.counseling.createdAt);
+    assert.ok(older.counseling.updatedAt);
+    const list = app.call({ action: 'counselings', token: adminToken, year: '2025', studentId: 'S001' });
+    assert.deepEqual(list.counselings.map(item => item.content), ['두 번째 상담', '첫 상담']);
+    assert.equal(app.call({ action: 'counselings', token: adminToken, year: '2025', studentId: 'S002' }).counselings.length, 0);
+    const revised = app.call({ action: 'saveCounseling', token: adminToken, year: '2025', studentId: 'S001', counseling: { counselingId: older.counseling.counselingId, counseledAt: older.counseling.counseledAt, content: '수정된 상담', authorName: 'Changed' } });
+    assert.equal(revised.ok, true, revised.error);
+    assert.equal(revised.counseling.content, '수정된 상담');
+    assert.equal(revised.counseling.authorName, 'Admin User');
+    assert.equal(app.call({ action: 'deleteCounseling', token: adminToken, year: '2025', studentId: 'S001', counselingId: newer.counseling.counselingId }).ok, true);
+    assert.equal(app.call({ action: 'counselings', token: adminToken, year: '2025', studentId: 'S001' }).counselings.length, 1);
+    const originalAudit = app.call({ action: 'logs', token: adminToken }).logs;
+    assert.ok(originalAudit.some(log => log.action === '학생 등록'), 'the existing audit log sheet is retained');
+    assert.ok(originalAudit.some(log => log.action === '상담 기록 수정'));
+    assert.equal(app.call({ action: 'counselings', token: adminToken, year: '2025', studentId: 'missing' }).ok, false);
+    const userLogin = app.call({ action: 'login', userId: 'legacy', password: 'legacy-password' });
+    const userRecord = app.call({ action: 'saveCounseling', token: userLogin.token, year: '2025', studentId: 'S002', counseling: { counseledAt: '2025-04-01T10:00', content: '일반 사용자 상담' } });
+    assert.equal(userRecord.ok, true, userRecord.error);
+    assert.equal(userRecord.counseling.authorName, 'Legacy User');
+  });
+
+  await t.test('stores personal schedules in configured sheets and enforces owner permissions', () => {
+    const categories = new Sheet('스케줄설정');
+    categories.rows = [
+      '카테고리ID, 카테고리명, 색상코드, 사용여부, 정렬순서'.split(', '),
+      ['personal', '개인', '#8B5CF6', true, 1],
+      ['work', '업무', '#2563EB', true, 2],
+    ];
+    const schedules = new Sheet('스케줄');
+    schedules.rows = ['일정ID, 사용자ID, 작성자명, 일정제목, 카테고리ID, 시작일시, 종료일시, 종일여부, 장소, 상세설명, 반복유형, 반복간격, 반복종료일, 등록일시, 수정일시'.split(', ')];
+    app.sheets.set(categories.name, categories);
+    app.sheets.set(schedules.name, schedules);
+    assert.equal(app.call({ action: 'sheets', token: adminToken }).sheets.includes('스케줄'), false, 'calendar tabs are not exposed as graduation-year sheets');
+    assert.equal(app.call({ action: 'scheduleCategories', token: adminToken }).categories.length, 2);
+    const saved = app.call({ action: 'saveSchedule', token: adminToken, schedule: {
+      title: '개인 일정', category_id: 'personal', start_datetime: '2026-10-06T09:00:00+09:00', end_datetime: '2026-10-06T10:00:00+09:00',
+      all_day: false, location: '서울', description: '내용', repeat_type: 'weekly', repeat_interval: 1, repeat_until: '2026-10-27', user_id: 'spoof', user_name: 'Spoof',
+    } });
+    assert.equal(saved.ok, true, saved.error);
+    assert.equal(saved.schedule.user_id, 'admin', 'owner comes from the authenticated session');
+    assert.equal(saved.schedule.user_name, 'Admin User');
+    assert.ok(saved.schedule.created_at);
+    const visible = app.call({ action: 'schedules', token: adminToken, fromDate: '2026-10-01', toDate: '2026-10-31' });
+    assert.equal(visible.schedules.length, 1);
+    assert.equal(visible.schedules[0].repeat_type, 'weekly');
+    const updated = app.call({ action: 'saveSchedule', token: adminToken, schedule: { ...saved.schedule, title: '수정한 일정' } });
+    assert.equal(updated.ok, true, updated.error);
+    assert.equal(schedules.rows.length, 2, 'an edit updates the existing row instead of duplicating it');
+    assert.equal(updated.schedule.created_at, saved.schedule.created_at);
+    schedules.appendRow(['owned-by-other', 'someone-else', 'Other User', '비공개 일정', 'personal', '2026-10-06T09:00:00+09:00', '2026-10-06T10:00:00+09:00', false, '', '', 'none', 1, '', '2026-01-01 00:00:00', '2026-01-01 00:00:00']);
+    assert.equal(app.call({ action: 'schedules', token: adminToken, fromDate: '2026-10-01', toDate: '2026-10-31' }).schedules.length, 1, 'other users schedules are not returned');
+    assert.equal(app.call({ action: 'saveSchedule', token: adminToken, schedule: { ...saved.schedule, schedule_id: 'owned-by-other' } }).ok, false);
+    assert.equal(app.call({ action: 'deleteSchedule', token: adminToken, schedule_id: 'owned-by-other' }).ok, false);
+    assert.equal(app.call({ action: 'saveSchedule', token: adminToken, schedule: { ...saved.schedule, schedule_id: '', start_datetime: '2026-10-06T11:00:00+09:00', end_datetime: '2026-10-06T10:00:00+09:00' } }).ok, false, 'end-before-start is rejected');
+    assert.equal(app.call({ action: 'deleteSchedule', token: adminToken, schedule_id: saved.schedule.schedule_id }).ok, true);
+    assert.equal(schedules.rows.length, 2, 'deleting own event leaves other users rows untouched');
   });
 
   await t.test('administrator can create users and changed credentials invalidate sessions', () => {

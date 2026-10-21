@@ -6,8 +6,11 @@
 
 - 관리자 등록 계정 기반 Google OAuth 및 아이디 로그인
 - 연도별 졸업생 조회, 검색, 상태 필터, 등록, 수정, 삭제
-- 연도별 학생 수와 취업·진학 상태 통계 및 CSV 내보내기
-- 관리자 전용 계정 관리와 최근 300건의 작업 기록 조회
+- 학생별 상담 기록 작성, 조회, 수정, 삭제 (작성자와 등록·수정일 기록)
+- 개인 일정 월간 달력, 카테고리 필터, 반복 일정과 일정별 CRUD
+- 대시보드 취업 현황 원형 그래프와 연도별 취업률 집계
+- 연도별 학생 수 통계 및 CSV 내보내기
+- 관리자 전용 계정 관리와 기존 감사 로그 보존
 - 세션 만료, 로그아웃 시 토큰 폐기, 역할 및 입력값 검증
 - 같은 탭 새로고침 시 세션 복원 (탭을 닫으면 브라우저 세션 저장소가 정리됨)
 - 모바일 반응형 화면
@@ -31,14 +34,21 @@
 userId, name, email, passwordHash, role, active
 ```
 
-5. 졸업연도별 시트를 만들고 1행에 아래 헤더를 입력합니다. 이름은 연도(예: `2025`)로 지정합니다. `사용자목록`, `logs` 이외의 시트가 연도 데이터 시트로 취급됩니다.
+5. 졸업연도별 시트를 만들고 1행에 아래 헤더를 입력합니다. 이름은 연도(예: `2025`)로 지정합니다. `사용자목록`, `logs`, `counselings` 이외의 시트가 연도 데이터 시트로 취급됩니다.
 
 ```text
 graduationYear, studentId, name, gender, phone, address, status, company, field, detail, gpa, updatedAt
 ```
 
-상태는 `취업자`, `진학자`, `미취업자`, `국비교육자`, `군입대자`, `기타`를 사용합니다. 사용자 목록과 로그 시트는 앱이 필요할 때 생성합니다.
+상태 선택지는 `취업자`, `진학자`, `미취업자`, `군입대자`, `기타`입니다. 취업률은 선택된 연도 시트에서 취업자를 분자로, 전체 학생에서 진학자와 군입대자를 제외한 인원을 분모로 계산합니다. 기존 데이터의 `국비교육자`, `조사자`·`미조사자`, 빈 상태와 알 수 없는 값은 삭제하지 않고 그래프에서 `기타·미분류`로 집계하며 취업자로 간주하지 않습니다. 사용자 목록, 감사 로그, 상담 기록 시트는 앱이 필요할 때 생성합니다.
 
+Personal schedules use the `스케줄` and `스케줄설정` tabs. Ownership is checked against the authenticated session, and recurrence is stored as type, interval, and end date. Use these exact headers:
+
+```text
+일정ID, 사용자ID, 작성자명, 일정제목, 카테고리ID, 시작일시, 종료일시, 종일여부, 장소, 상세설명, 반복유형, 반복간격, 반복종료일, 등록일시, 수정일시
+```
+
+The `스케줄설정` tab uses this header: `카테고리ID, 카테고리명, 색상코드, 사용여부, 정렬순서`. Birthday categories are not included.
 ## Cloudflare Worker 설정
 
 1. `cloudflare-worker/wrangler.toml`의 `APPS_SCRIPT_URL`을 Apps Script 배포 URL(`/exec`)로 변경합니다.
