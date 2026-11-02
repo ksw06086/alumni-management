@@ -7,6 +7,7 @@ dist
 member_management_project.pdf
 .env
 .env.local
+.dev.vars
 .DS_Store
 !apps-script/
 !apps-script/**

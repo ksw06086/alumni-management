@@ -29,3 +29,5 @@
  * - 위쪽 @media 규칙은 좁은 화면에서 컬럼 수와 간격을 재정의합니다.
  */
 .schedule-repeat-note{margin:-5px 0 10px 24px;color:#9aa4b1;font-size:10px}
+.calendar-date.holiday-date{color:#c9473d}.calendar-date.saturday-date{color:#3973ae}.calendar-day.today .calendar-date.holiday-date span{background:#c9473d;color:#fff}.calendar-holiday{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9473d;font-size:9px;line-height:16px;font-weight:700}
+.agenda-holiday{margin:0 18px;padding:11px 0;border-bottom:1px solid #edf0f4;color:#c9473d;font-size:12px;font-weight:700}

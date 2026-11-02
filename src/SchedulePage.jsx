@@ -5,6 +5,24 @@ import { buildDateEventMap, buildWeekEventSegments, calendarGridDates, dateKey }
 const API_URL = import.meta.env.VITE_API_BASE_URL || '';
 const DAY_NAMES = ['일', '월', '화', '수', '목', '금', '토'];
 const DEFAULT_CATEGORY_COLOR = '#64748b';
+const HOLIDAY_CACHE_TTL = 24 * 60 * 60 * 1000;
+
+async function loadHolidayMonth(year, month) {
+  const cacheKey = `kr-holidays:${year}-${String(month).padStart(2, '0')}`;
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem(cacheKey) || 'null'); } catch (_) { /* Ignore invalid local cache. */ }
+  if (cached?.savedAt && Date.now() - cached.savedAt < HOLIDAY_CACHE_TTL && Array.isArray(cached.holidays)) return cached.holidays;
+  try {
+    const result = await send('holidays', '', { year: String(year), month: String(month).padStart(2, '0') });
+    const holidays = result.holidays || [];
+    localStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), holidays }));
+    return holidays;
+  } catch (error) {
+    if (cached && Array.isArray(cached.holidays)) return cached.holidays;
+    console.warn('Holiday lookup failed; personal schedules remain available.', error.message);
+    return [];
+  }
+}
 
 async function send(action, token, payload = {}) {
   // 일정 화면의 API 어댑터입니다. 인증 토큰과 action을 붙여 Worker에 보내고 응답 오류를 예외로 바꿉니다.
@@ -58,6 +76,7 @@ export default function SchedulePage({ auth }) {
   const [categories, setCategories] = useState([]);
   const [categoriesLoad, setCategoriesLoad] = useState({ status: 'loading', error: '' });
   const [schedules, setSchedules] = useState([]);
+  const [holidays, setHolidays] = useState([]);
   const [schedulesLoad, setSchedulesLoad] = useState({ status: 'loading', error: '' });
   const [hiddenCategoryIds, setHiddenCategoryIds] = useState([]);
   const [search, setSearch] = useState('');
@@ -104,6 +123,13 @@ export default function SchedulePage({ auth }) {
     }).catch(reason => { if (active) { setSchedulesLoad({ status: 'error', error: reason.message }); setError(reason.message); } });
     return () => { active = false; };
   }, [auth.token, rangeStart, rangeEnd]);
+
+  useEffect(() => {
+    let active = true;
+    setHolidays([]);
+    loadHolidayMonth(month.getFullYear(), month.getMonth() + 1).then(items => { if (active) setHolidays(items); });
+    return () => { active = false; };
+  }, [month.getFullYear(), month.getMonth()]);
 
   // 아래 값들은 API 원본에서 파생되는 읽기 전용 데이터입니다. 검색/필터 변경 시 재계산됩니다.
   const categoriesById = useMemo(() => Object.fromEntries(categories.map(category => [category.category_id, category])), [categories]);
@@ -191,9 +217,11 @@ export default function SchedulePage({ auth }) {
                 const isToday = key === seoulDateKey(); const isFocused = key === focusedDate;
                 const events = (dateEvents[key] || []).filter(event => event.occurrence_start_date === event.occurrence_end_date);
                 const shown = events.slice(0, 3);
+                const holiday = holidays.find(item => item.date === key.replaceAll('-', ''));
+                const weekday = day.getUTCDay();
                 return <div key={key} className={`calendar-day ${isCurrentMonth ? '' : 'outside-month'} ${isToday ? 'today' : ''} ${isFocused ? 'focused' : ''}`} onClick={() => { setFocusedDate(key); setError(''); }}>
-                  <button className="calendar-date" onClick={() => { setFocusedDate(key); setError(''); }} aria-label={`${key} 선택`}><span>{day.getUTCDate()}</span></button>
-                  <div className="calendar-event-list">{shown.map((event, index) => {
+                  <button className={`calendar-date ${holiday || weekday === 0 ? 'holiday-date' : weekday === 6 ? 'saturday-date' : ''}`} onClick={() => { setFocusedDate(key); setError(''); }} aria-label={`${key}${holiday ? ` ${holiday.name}` : ''} 선택`}><span>{day.getUTCDate()}</span></button>
+                  <div className="calendar-event-list">{holiday && <div className="calendar-holiday" title={holiday.name}>{holiday.name}</div>}{shown.map((event, index) => {
                     const category = categoriesById[event.category_id];
                     return <button key={`${eventKey(event)}-${index}`} className="calendar-event" style={{ '--event-color': safeColor(category?.color_hex) }} title={`${event.title}${event.all_day ? ' · 종일' : ` · ${timeValue(event.start_datetime)}`}`} onClick={click => { click.stopPropagation(); setDetail({ ...event, _category: category }); setError(''); }}><span>{event.title}</span></button>;
                   })}{events.length > 3 && <button className="calendar-more" onClick={click => { click.stopPropagation(); setFocusedDate(key); }}>+{events.length - 3} more</button>}</div>
@@ -206,6 +234,7 @@ export default function SchedulePage({ auth }) {
       </div>
     </section>
     <section className="panel schedule-agenda"><div className="panel-title"><div><h2>{titleForDate}</h2><p>{focusedDate ? '선택한 날짜의 일정' : '이 달에 시작하는 일정'}</p></div><button className="outline-button" onClick={() => openNew(focusedDate || undefined)}><Plus size={15}/> 일정 추가</button></div>
+      {focusedDate && holidays.find(item => item.date === focusedDate.replaceAll('-', '')) && <div className="agenda-holiday">공휴일 · {holidays.find(item => item.date === focusedDate.replaceAll('-', '')).name}</div>}
       {schedulesLoad.status !== 'loaded' ? <ScheduleDataState state={schedulesLoad} onRetry={retrySchedules}/> : agendaEvents.length ? <div className="agenda-list">{agendaEvents.map(event => {
         const category = categoriesById[event.category_id];
         return <button className="agenda-event" key={eventKey(event)} onClick={() => setDetail({ ...event, _category: category })}><i style={{ backgroundColor: safeColor(category?.color_hex) }}/><span className="agenda-date">{event.occurrence_start_date === event.occurrence_end_date ? formatDate(event.occurrence_start_date) : `${formatDate(event.occurrence_start_date)} – ${formatDate(event.occurrence_end_date)}`}</span><span className="agenda-time">{event.all_day ? '종일' : `${timeValue(event.start_datetime)}–${timeValue(event.end_datetime)}`}</span><b>{event.title}</b><small>{category?.category_name || '기타'}</small></button>;
