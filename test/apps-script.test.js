@@ -16,7 +16,7 @@ function makeHarness() {
   users.rows = [
     ['userId', 'name', 'email', 'passwordHash', 'role', 'active'],
     ['admin', 'Admin User', 'admin@example.com', '', 'admin', true],
-    ['legacy', 'Legacy User', '', '', 'user', true],
+    ['legacy', 'Legacy User', 'legacy@example.com', '', 'user', true],
   ];
   const yearly = new Sheet('2025');
   yearly.rows = [
@@ -25,6 +25,9 @@ function makeHarness() {
   ];
   sheets.set(users.name, users);
   sheets.set(yearly.name, yearly);
+  const current = new Sheet('재학생');
+  current.rows = [['student_id', 'name', 'birth_date', 'gender', 'phone', 'email', 'affiliation', 'enrollment_status', 'notes', 'created_at', 'updated_at'], ['C001', 'Current Student', '2004-01-02', 'F', '010-1111', 'current@example.com', '학과', '재학', '', '2026-01-01', '2026-01-01']];
+  sheets.set(current.name, current);
 
   const cache = {
     get: key => cacheValues.get(key) ?? null,
@@ -79,6 +82,7 @@ class Sheet {
   getRange(row, column, rowCount = 1, columnCount = 1) {
     return {
       getValues: () => Array.from({ length: rowCount }, (_, ri) => Array.from({ length: columnCount }, (_, ci) => this.rows[row - 1 + ri]?.[column - 1 + ci] ?? '')),
+      getDisplayValues: () => Array.from({ length: rowCount }, (_, ri) => Array.from({ length: columnCount }, (_, ci) => String(this.rows[row - 1 + ri]?.[column - 1 + ci] ?? ''))),
       setValues: values => values.forEach((line, ri) => {
         const targetRow = row - 1 + ri;
         while (this.rows.length <= targetRow) this.rows.push([]);
@@ -97,16 +101,16 @@ class Sheet {
 
 test('Apps Script API authentication, roles, student lifecycle, statistics, logs and sessions', async t => {
   const app = makeHarness();
-  const adminLogin = app.call({ action: 'login', userId: 'admin', password: 'strong-admin-password' });
+  const adminLogin = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
   assert.equal(adminLogin.ok, true, adminLogin.error || 'admin login succeeds');
   assert.equal('authVersion' in adminLogin.user, false, 'internal session version is not returned to the browser');
   const adminToken = adminLogin.token;
 
   await t.test('requires a valid session and restricts admin-only actions', () => {
     assert.equal(app.call({ action: 'students', year: '2025' }).ok, false);
-    const userLogin = app.call({ action: 'login', userId: 'legacy', password: 'legacy-password' });
+    app.setGoogleProfile({ email: 'legacy@example.com', email_verified: true, aud: 'test-client' });
+    const userLogin = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
     assert.equal(userLogin.ok, true);
-    assert.match(app.userRows[2][3], /^pbkdf2\$/,'legacy SHA-256 passwords migrate after successful login');
     assert.equal(app.call({ action: 'logs', token: userLogin.token }).ok, false);
     assert.equal(app.call({ action: 'users', token: userLogin.token }).ok, false);
     assert.equal(app.call({ action: 'users', token: adminToken }).ok, true);
@@ -119,6 +123,24 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     assert.equal(app.call({ action: 'googleLogin', accessToken: 'mock-token' }).ok, false);
     app.setGoogleProfile({ email: 'admin@example.com', email_verified: true, aud: 'test-client' });
     assert.equal(app.call({ action: 'googleLogin', accessToken: 'mock-token' }).ok, true);
+  });
+
+  await t.test('protects current student reads, writes and counseling for administrators only', () => {
+    app.setGoogleProfile({ email: 'legacy@example.com', email_verified: true, aud: 'test-client' });
+    const userLogin = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
+    assert.equal(app.call({ action: 'currentStudents', token: userLogin.token }).ok, false);
+    assert.equal(app.call({ action: 'saveCurrentStudent', token: userLogin.token, create: true, student: { student_id: 'C002', name: 'Blocked' } }).ok, false);
+    assert.equal(app.call({ action: 'currentCounselings', token: userLogin.token, studentId: 'C001' }).ok, false);
+    assert.equal(app.call({ action: 'saveCurrentCounseling', token: userLogin.token, studentId: 'C001', counseling: { counseledAt: '2026-01-01T00:00', content: 'blocked' } }).ok, false);
+    app.setGoogleProfile({ email: 'admin@example.com', email_verified: true, aud: 'test-client' });
+    const adminLogin = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
+    const result = app.call({ action: 'currentStudents', token: adminLogin.token });
+    assert.equal(result.ok, true);
+    assert.equal(result.students[0].student_id, 'C001');
+    const updated = app.call({ action: 'saveCurrentStudent', token: adminLogin.token, student: { ...result.students[0], affiliation: '학과 2' } });
+    assert.equal(updated.ok, true);
+    assert.equal(updated.student.affiliation, '학과 2');
+    assert.equal(app.call({ action: 'login', userId: 'admin', password: 'strong-admin-password' }).ok, false);
   });
 
   await t.test('reads students and rejects invalid sheet names', () => {
@@ -187,7 +209,8 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     assert.ok(originalAudit.some(log => log.action === '학생 등록'), 'the existing audit log sheet is retained');
     assert.ok(originalAudit.some(log => log.action === '상담 기록 수정'));
     assert.equal(app.call({ action: 'counselings', token: adminToken, year: '2025', studentId: 'missing' }).ok, false);
-    const userLogin = app.call({ action: 'login', userId: 'legacy', password: 'legacy-password' });
+    app.setGoogleProfile({ email: 'legacy@example.com', email_verified: true, aud: 'test-client' });
+    const userLogin = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
     const userRecord = app.call({ action: 'saveCounseling', token: userLogin.token, year: '2025', studentId: 'S002', counseling: { counseledAt: '2025-04-01T10:00', content: '일반 사용자 상담' } });
     assert.equal(userRecord.ok, true, userRecord.error);
     assert.equal(userRecord.counseling.authorName, 'Legacy User');
@@ -231,25 +254,29 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
   });
 
   await t.test('administrator can create users and changed credentials invalidate sessions', () => {
-    const user = { userId: 'newuser', name: 'New User', email: '', password: 'new-user-password', role: 'user', active: true };
+    const user = { userId: 'newuser', name: 'New User', email: 'newuser@example.com', role: 'user', active: true };
     const saved = app.call({ action: 'saveUser', token: adminToken, user });
     assert.equal(saved.ok, true);
-    const login = app.call({ action: 'login', userId: 'newuser', password: user.password });
+    app.setGoogleProfile({ email: user.email, email_verified: true, aud: 'test-client' });
+    const login = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
     assert.equal(login.ok, true);
-    assert.equal(app.call({ action: 'saveUser', token: adminToken, user: { ...user, password: 'updated-user-password' } }).ok, true);
+    app.setGoogleProfile({ email: 'admin@example.com', email_verified: true, aud: 'test-client' });
+    assert.equal(app.call({ action: 'saveUser', token: adminToken, user: { ...user, name: 'New Name' } }).ok, true);
     assert.match(app.call({ action: 'students', token: login.token, year: '2025' }).error, /비활성화|권한/);
-    const updatedLogin = app.call({ action: 'login', userId: 'newuser', password: 'updated-user-password' });
+    app.setGoogleProfile({ email: user.email, email_verified: true, aud: 'test-client' });
+    const updatedLogin = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
     assert.equal(updatedLogin.ok, true);
-    assert.equal(app.call({ action: 'saveUser', token: adminToken, user: { ...user, active: false, password: '' } }).ok, true);
+    app.setGoogleProfile({ email: 'admin@example.com', email_verified: true, aud: 'test-client' });
+    assert.equal(app.call({ action: 'saveUser', token: adminToken, user: { ...user, active: false } }).ok, true);
     assert.match(app.call({ action: 'students', token: updatedLogin.token, year: '2025' }).error, /비활성화|권한/);
   });
 
-  await t.test('logout revokes the session and failed logins are throttled', () => {
-    const fresh = app.call({ action: 'login', userId: 'admin', password: 'strong-admin-password' });
+  await t.test('logout revokes the session and local password login is disabled', () => {
+    app.setGoogleProfile({ email: 'admin@example.com', email_verified: true, aud: 'test-client' });
+    const fresh = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
     assert.equal(fresh.ok, true);
     assert.equal(app.call({ action: 'logout', token: fresh.token }).ok, true);
     assert.equal(app.call({ action: 'statistics', token: fresh.token }).ok, false);
-    for (let i = 0; i < 5; i++) app.call({ action: 'login', userId: 'blocked-user', password: 'wrong-password' });
-    assert.match(app.call({ action: 'login', userId: 'blocked-user', password: 'wrong-password' }).error, /너무 많습니다/);
+    assert.equal(app.call({ action: 'login', userId: 'admin', password: 'strong-admin-password' }).ok, false);
   });
 });

@@ -3,11 +3,22 @@ const GOOGLE_CLIENT_ID = PropertiesService.getScriptProperties().getProperty('GO
 const SESSION_TTL_SECONDS = 21600;
 const USERS_SHEET = '사용자목록';
 const LOGS_SHEET = 'logs';
+const COUNSELINGS_SHEET = 'counselings';
+const CURRENT_STUDENTS_SHEET = '재학생';
+const CURRENT_STUDENT_HEADERS = ['student_id', 'name', 'birth_date', 'gender', 'phone', 'email', 'affiliation', 'enrollment_status', 'notes', 'created_at', 'updated_at'];
+// 아래 두 일정 탭은 사용자가 만든 한국어 헤더를 검증합니다. SCHEDULE_FIELDS는 프론트엔드에 주는 API 필드명이며 열 순서가 서로 대응해야 합니다.
+const SCHEDULES_SHEET = '스케줄';
+const SCHEDULE_CATEGORIES_SHEET = '스케줄설정';
 const USER_HEADERS = ['userId', 'name', 'email', 'passwordHash', 'role', 'active'];
 const LOG_HEADERS = ['timestamp', 'userId', 'userName', 'action', 'targetYear', 'targetStudentId', 'targetStudentName', 'detail'];
+const COUNSELING_HEADERS = ['counselingId', 'graduationYear', 'studentId', 'studentName', 'counseledAt', 'content', 'authorUserId', 'authorName', 'createdAt', 'updatedAt'];
+const SCHEDULE_HEADERS = ['일정ID', '사용자ID', '작성자명', '일정제목', '카테고리ID', '시작일시', '종료일시', '종일여부', '장소', '상세설명', '반복유형', '반복간격', '반복종료일', '등록일시', '수정일시'];
+const SCHEDULE_CATEGORY_HEADERS = ['카테고리ID', '카테고리명', '색상코드', '사용여부', '정렬순서'];
+const SCHEDULE_FIELDS = ['schedule_id', 'user_id', 'user_name', 'title', 'category_id', 'start_datetime', 'end_datetime', 'all_day', 'location', 'description', 'repeat_type', 'repeat_interval', 'repeat_until', 'created_at', 'updated_at'];
 const DATA_HEADERS = ['graduationYear', 'studentId', 'name', 'gender', 'phone', 'address', 'status', 'company', 'field', 'detail', 'gpa', 'updatedAt'];
-const VALID_STATUSES = ['취업자', '진학자', '미취업자', '국비교육자', '군입대자', '기타'];
+const VALID_STATUSES = ['취업자', '진학자', '미취업자', '군입대자', '기타'];
 
+// Apps Script 웹 앱 진입점입니다. 실제 기능 선택과 권한 검사는 route_에서 처리합니다.
 function doGet(e) { return respond_(route_(e && e.parameter ? e.parameter : {})); }
 function doPost(e) {
   let body = {};
@@ -16,12 +27,13 @@ function doPost(e) {
   return respond_(route_(body));
 }
 
+// action 라우터: 요청 본문에서 작업을 고르고, 데이터 접근 전에 세션과 역할을 확인합니다.
 function route_(request) {
   try {
     if (!SPREADSHEET_ID) throw new Error('Apps Script 속성 SPREADSHEET_ID가 설정되지 않았습니다.');
     switch (request.action) {
-      case 'login': return login_(request);
       case 'googleLogin': return googleLogin_(request);
+      case 'session': return withSession_(request, ['admin', 'user'], user => ({ ok: true, user: user }));
       case 'users': return withSession_(request, ['admin'], () => ({ ok: true, users: readUsers_(false) }));
       case 'saveUser': return withSession_(request, ['admin'], session => saveUser_(session, request.user || {}));
       case 'sheets': return withSession_(request, ['admin', 'user'], () => ({ ok: true, sheets: listDataSheets_() }));
@@ -32,6 +44,18 @@ function route_(request) {
       });
       case 'saveStudent': return withSession_(request, ['admin', 'user'], session => saveStudent_(session, request));
       case 'deleteStudent': return withSession_(request, ['admin', 'user'], session => deleteStudent_(session, request));
+      case 'currentStudents': return withSession_(request, ['admin'], () => ({ ok: true, students: readCurrentStudents_() }));
+      case 'saveCurrentStudent': return withSession_(request, ['admin'], session => saveCurrentStudent_(session, request));
+      case 'currentCounselings': return withSession_(request, ['admin'], () => ({ ok: true, counselings: readCounselings_('재학생', request.studentId) }));
+      case 'saveCurrentCounseling': return withSession_(request, ['admin'], session => saveCounseling_(session, Object.assign({}, request, { year: '재학생' })));
+      case 'deleteCurrentCounseling': return withSession_(request, ['admin'], session => deleteCounseling_(session, Object.assign({}, request, { year: '재학생' })));
+      case 'counselings': return withSession_(request, ['admin', 'user'], () => ({ ok: true, counselings: readCounselings_(request.year, request.studentId) }));
+      case 'saveCounseling': return withSession_(request, ['admin', 'user'], session => saveCounseling_(session, request));
+      case 'deleteCounseling': return withSession_(request, ['admin', 'user'], session => deleteCounseling_(session, request));
+      case 'scheduleCategories': return withSession_(request, ['admin', 'user'], () => ({ ok: true, categories: readScheduleCategories_() }));
+      case 'schedules': return withSession_(request, ['admin', 'user'], session => ({ ok: true, schedules: readSchedules_(session, request.fromDate, request.toDate) }));
+      case 'saveSchedule': return withSession_(request, ['admin', 'user'], session => saveSchedule_(session, request));
+      case 'deleteSchedule': return withSession_(request, ['admin', 'user'], session => deleteSchedule_(session, request));
       case 'statistics': return withSession_(request, ['admin', 'user'], () => ({ ok: true, statistics: getStatistics_() }));
       case 'logs': return withSession_(request, ['admin'], () => ({ ok: true, logs: readLogs_() }));
       case 'logout': return logout_(request);
@@ -40,6 +64,7 @@ function route_(request) {
   } catch (error) { return { ok: false, error: error.message || String(error) }; }
 }
 
+// 아이디 로그인은 실패 횟수를 제한하고, 비밀번호는 저장된 해시와 비교합니다.
 function login_(request) {
   const userId = String(request.userId || '').trim();
   const attemptKey = 'login-fail:' + userId.toLowerCase();
@@ -62,6 +87,7 @@ function login_(request) {
   return createSession_(user);
 }
 
+// 브라우저 토큰을 Google tokeninfo로 검증한 뒤 사용자목록에 등록된 활성 계정만 허용합니다.
 function googleLogin_(request) {
   if (!request.accessToken) throw new Error('Google 인증 토큰이 없습니다.');
   if (!GOOGLE_CLIENT_ID) throw new Error('Apps Script 속성 GOOGLE_CLIENT_ID가 설정되지 않았습니다.');
@@ -76,6 +102,7 @@ function googleLogin_(request) {
   return createSession_(user);
 }
 
+// 세션 토큰은 Apps Script Cache에 저장하며, authVersion으로 계정 변경 후 기존 세션을 무효화합니다.
 function createSession_(user) {
   const token = Utilities.getUuid();
   const cache = CacheService.getScriptCache();
@@ -100,6 +127,7 @@ function getSession_(token) {
   return publicUser_(current);
 }
 
+// 보호된 API의 공통 권한 경계입니다. 허용 역할에 없으면 callback을 실행하지 않습니다.
 function withSession_(request, roles, callback) {
   const session = getSession_(request.token);
   if (roles.indexOf(session.role) < 0) throw new Error('이 작업을 수행할 권한이 없습니다.');
@@ -134,7 +162,7 @@ function saveUser_(session, input) {
   if (!userId || !name) throw new Error('아이디와 이름을 입력하세요.');
   if (!/^[A-Za-z0-9._-]{3,40}$/.test(userId)) throw new Error('아이디는 영문, 숫자, ., _, -만 사용해 3~40자로 입력하세요.');
   if (role !== 'admin' && role !== 'user') throw new Error('올바르지 않은 사용자 역할입니다.');
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Google 이메일 주소를 확인하세요.');
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Google 이메일 주소를 입력하세요.');
   if (input.password && String(input.password).length < 10) throw new Error('비밀번호는 10자 이상이어야 합니다.');
   const sheet = getOrCreateSheet_(USERS_SHEET, USER_HEADERS);
   const values = sheet.getDataRange().getValues();
@@ -144,7 +172,6 @@ function saveUser_(session, input) {
   const active = input.active !== false && String(input.active).toLowerCase() !== 'false';
   if (email && readUsers_(true).some(user => user.email.toLowerCase() === email && user.userId !== userId)) throw new Error('이미 다른 계정에 연결된 이메일입니다.');
   const passwordHash = input.password ? hashPassword_(String(input.password)) : (existing ? String(existing[3] || '') : '');
-  if (!existing && !passwordHash) throw new Error('새 계정에는 비밀번호가 필요합니다.');
   const row = [userId, name, email, passwordHash, role, active];
   if (existingIndex < 0) sheet.appendRow(row); else sheet.getRange(existingIndex + 2, 1, 1, USER_HEADERS.length).setValues([row]);
   if (existing && (userId !== session.userId || (input.password && String(input.password)) || String(existing[4]) !== role || String(existing[5]).toLowerCase() !== String(active))) {
@@ -157,7 +184,7 @@ function saveUser_(session, input) {
 }
 
 function listDataSheets_() {
-  return SpreadsheetApp.openById(SPREADSHEET_ID).getSheets().map(sheet => sheet.getName()).filter(name => name !== USERS_SHEET && name !== LOGS_SHEET);
+  return SpreadsheetApp.openById(SPREADSHEET_ID).getSheets().map(sheet => sheet.getName()).filter(name => ![USERS_SHEET, LOGS_SHEET, COUNSELINGS_SHEET, SCHEDULES_SHEET, SCHEDULE_CATEGORIES_SHEET, CURRENT_STUDENTS_SHEET].includes(name));
 }
 function getDataSheet_(year) {
   const target = String(year || '').trim();
@@ -169,6 +196,44 @@ function readStudents_(year) {
   return values.slice(1).filter(row => row.some(Boolean)).map(row => Object.fromEntries(DATA_HEADERS.map((h, i) => [h, row[i] == null ? '' : String(row[i])] )));
 }
 
+// 재학생은 졸업생 연도 시트와 분리된 고정 시트를 이름 기반으로 매핑합니다.
+function getCurrentStudentsSheet_() {
+  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(CURRENT_STUDENTS_SHEET);
+  if (!sheet) throw new Error('Google Sheets에 재학생 시트가 없습니다.');
+  if (sheet.getLastRow() === 0) sheet.getRange(1, 1, 1, CURRENT_STUDENT_HEADERS.length).setValues([CURRENT_STUDENT_HEADERS]);
+  const actual = sheet.getRange(1, 1, 1, CURRENT_STUDENT_HEADERS.length).getDisplayValues()[0].map(value => String(value).trim());
+  if (CURRENT_STUDENT_HEADERS.some((header, index) => actual[index] !== header)) throw new Error('재학생 시트 첫 행의 컬럼명과 순서를 확인하세요.');
+  return sheet;
+}
+function readCurrentStudents_() {
+  const sheet = getCurrentStudentsSheet_();
+  const values = sheet.getDataRange().getValues();
+  return values.slice(1).filter(row => row.some(Boolean)).map(row => Object.fromEntries(CURRENT_STUDENT_HEADERS.map((header, index) => [header, row[index] == null ? '' : String(row[index])] )));
+}
+function saveCurrentStudent_(session, request) {
+  const input = request.student || {};
+  const studentId = String(input.student_id || '').trim();
+  const name = String(input.name || '').trim();
+  if (!studentId || !name) throw new Error('학생 ID와 이름을 입력하세요.');
+  const sheet = getCurrentStudentsSheet_();
+  const rows = sheet.getDataRange().getValues();
+  const index = rows.slice(1).findIndex(row => String(row[0]).trim() === studentId);
+  const existing = index < 0 ? null : rows[index + 1];
+  if (request.create && existing) throw new Error('이미 등록된 학생 ID입니다.');
+  if (!request.create && !existing) throw new Error('수정할 재학생을 찾을 수 없습니다.');
+  const now = now_();
+  const record = CURRENT_STUDENT_HEADERS.map((header, column) => {
+    if (header === 'created_at') return existing ? String(existing[column] || '') : now;
+    if (header === 'updated_at') return now;
+    return String(input[header] == null ? '' : input[header]).trim();
+  });
+  if (existing) sheet.getRange(index + 2, 1, 1, CURRENT_STUDENT_HEADERS.length).setValues([record]);
+  else sheet.appendRow(record);
+  appendLog_(session, existing ? '재학생 수정' : '재학생 등록', '재학생', studentId, name, existing ? '재학생 정보 수정' : '재학생 정보 등록');
+  return { ok: true, student: Object.fromEntries(CURRENT_STUDENT_HEADERS.map((header, i) => [header, record[i]])) };
+}
+
+// 연도 시트의 학생 CRUD. 컬럼 순서는 DATA_HEADERS와 시트 1행이 일치해야 합니다.
 function saveStudent_(session, request) {
   const year = String(request.year || '').trim();
   const input = request.student || {};
@@ -178,12 +243,14 @@ function saveStudent_(session, request) {
   const student = {};
   DATA_HEADERS.forEach(header => { student[header] = String(input[header] == null ? '' : input[header]).trim(); });
   student.graduationYear = year;
-  if (student.status && VALID_STATUSES.indexOf(student.status) < 0) throw new Error('올바른 졸업 후 상태를 선택하세요.');
   if (student.gpa && (!/^\d{1,2}(\.\d{1,2})?$/.test(student.gpa) || Number(student.gpa) > 4.5)) throw new Error('평점은 0~4.5 범위에서 입력하세요.');
   const sheet = getDataSheet_(year);
   const values = sheet.getDataRange().getValues();
   const index = values.slice(1).findIndex(row => String(row[1]).trim() === studentId);
   const isCreate = index < 0;
+  const existingStatus = isCreate ? '' : String(values[index + 1][6] || '');
+  const preservesLegacyStatus = !isCreate && student.status === existingStatus && ['조사자', '미조사자', '국비교육자'].includes(existingStatus);
+  if (student.status && VALID_STATUSES.indexOf(student.status) < 0 && !preservesLegacyStatus) throw new Error('올바른 졸업 후 상태를 선택하세요.');
   if (request.create && !isCreate) throw new Error('이미 등록된 학번입니다. 기존 학생을 선택해 수정하세요.');
   if (!request.create && isCreate) throw new Error('수정할 학생을 찾을 수 없습니다. 목록을 새로고침하세요.');
   if (isCreate) {
@@ -211,6 +278,7 @@ function deleteStudent_(session, request) {
   return { ok: true };
 }
 
+// 상태별 통계는 현재 유효한 상태 목록만 집계합니다. 과거 미지원 상태는 합계에는 포함되지만 상태 카운트에는 포함되지 않습니다.
 function getStatistics_() {
   return listDataSheets_().sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).map(year => {
     const rows = readStudents_(year);
@@ -218,6 +286,149 @@ function getStatistics_() {
     rows.forEach(student => { if (Object.prototype.hasOwnProperty.call(counts, student.status)) counts[student.status]++; });
     return { year: year, total: rows.length, counts: counts };
   });
+}
+
+function findStudent_(year, studentId) {
+  if (String(year || '').trim() === '재학생') {
+    const student = readCurrentStudents_().find(row => row.student_id === String(studentId || '').trim());
+    if (!student) throw new Error('재학생 명단에서 학생을 찾을 수 없습니다.');
+    return { studentId: student.student_id, name: student.name };
+  }
+  const student = readStudents_(year).find(row => row.studentId === String(studentId || '').trim());
+  if (!student) throw new Error('선택한 연도의 학생 명단에서 학생을 찾을 수 없습니다.');
+  return student;
+}
+// 상담은 학생 데이터 행과 분리된 시트에 저장하고, 조회 시 연도와 학생 ID로 범위를 제한합니다.
+function readCounselings_(year, studentId) {
+  const targetYear = String(year || '').trim();
+  const targetStudentId = String(studentId || '').trim();
+  if (!targetYear || !targetStudentId) throw new Error('연도와 학생을 선택하세요.');
+  findStudent_(targetYear, targetStudentId);
+  return getOrCreateSheet_(COUNSELINGS_SHEET, COUNSELING_HEADERS).getDataRange().getValues().slice(1).filter(row => row.some(Boolean) && String(row[1]) === targetYear && String(row[2]) === targetStudentId)
+    .map(row => Object.fromEntries(COUNSELING_HEADERS.map((header, i) => [header, row[i] == null ? '' : String(row[i])])) )
+    .sort((a, b) => b.counseledAt.localeCompare(a.counseledAt) || b.createdAt.localeCompare(a.createdAt));
+}
+function saveCounseling_(session, request) {
+  const year = String(request.year || '').trim();
+  const studentId = String(request.studentId || '').trim();
+  const input = request.counseling || {};
+  const counselingId = String(input.counselingId || '').trim();
+  const counseledAt = String(input.counseledAt || '').trim();
+  const content = String(input.content || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(counseledAt)) throw new Error('상담 일시를 입력하세요.');
+  if (!content) throw new Error('상담 내용을 입력하세요.');
+  const student = findStudent_(year, studentId);
+  const sheet = getOrCreateSheet_(COUNSELINGS_SHEET, COUNSELING_HEADERS);
+  const values = sheet.getDataRange().getValues();
+  const index = counselingId ? values.slice(1).findIndex(row => String(row[0]) === counselingId && String(row[1]) === year && String(row[2]) === studentId) : -1;
+  if (counselingId && index < 0) throw new Error('수정할 상담 기록을 찾을 수 없습니다.');
+  const now = nowSeoul_();
+  const existing = index >= 0 ? values[index + 1] : null;
+  const record = [existing ? String(existing[0]) : Utilities.getUuid(), year, studentId, student.name, counseledAt, content, existing ? String(existing[6]) : session.userId, existing ? String(existing[7]) : session.name, existing ? String(existing[8]) : now, now];
+  if (existing) sheet.getRange(index + 2, 1, 1, COUNSELING_HEADERS.length).setValues([record]); else sheet.appendRow(record);
+  appendLog_(session, existing ? '상담 기록 수정' : '상담 기록 등록', year, studentId, student.name, existing ? '학생 상담 내용 수정' : '학생 상담 내용 등록');
+  return { ok: true, counseling: Object.fromEntries(COUNSELING_HEADERS.map((header, i) => [header, record[i]])) };
+}
+function deleteCounseling_(session, request) {
+  const year = String(request.year || '').trim();
+  const studentId = String(request.studentId || '').trim();
+  const counselingId = String(request.counselingId || '').trim();
+  const student = findStudent_(year, studentId);
+  const sheet = getOrCreateSheet_(COUNSELINGS_SHEET, COUNSELING_HEADERS);
+  const index = sheet.getDataRange().getValues().slice(1).findIndex(row => String(row[0]) === counselingId && String(row[1]) === year && String(row[2]) === studentId);
+  if (!counselingId || index < 0) throw new Error('삭제할 상담 기록을 찾을 수 없습니다.');
+  sheet.deleteRow(index + 2);
+  appendLog_(session, '상담 기록 삭제', year, studentId, student.name, '학생 상담 기록 삭제');
+  return { ok: true };
+}
+
+// 일정 시트는 사용자가 만든 구조를 유지합니다. 탭 이름과 첫 행 헤더가 다르면 쓰기 전에 오류를 반환합니다.
+function getRequiredScheduleSheet_(name, headers) {
+  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(name);
+  if (!sheet) throw new Error(name + ' 시트가 없습니다. Google Sheets에 안내된 탭을 추가하세요.');
+  const actual = sheet.getRange(1, 1, 1, headers.length).getValues()[0].map(value => String(value || '').trim());
+  if (headers.some((header, index) => actual[index] !== header)) throw new Error(name + ' 시트의 첫 행 컬럼명이 안내된 구조와 다릅니다.');
+  return sheet;
+}
+function readScheduleCategories_() {
+  const values = getRequiredScheduleSheet_(SCHEDULE_CATEGORIES_SHEET, SCHEDULE_CATEGORY_HEADERS).getDataRange().getValues();
+  return values.slice(1).filter(row => row.some(Boolean)).map(row => ({
+    category_id: String(row[0] || ''), category_name: String(row[1] || ''), color_hex: String(row[2] || ''),
+    is_active: String(row[3]).toLowerCase() !== 'false' && String(row[3]) !== '0', sort_order: Number(row[4] || 0),
+  })).sort((a, b) => a.sort_order - b.sort_order || a.category_name.localeCompare(b.category_name));
+}
+// 일정 조회는 서버 세션의 userId로 소유자를 필터링합니다. 클라이언트가 보낸 사용자 ID는 사용하지 않습니다.
+function readSchedules_(session, fromDate, toDate) {
+  const from = String(fromDate || '');
+  const to = String(toDate || '');
+  if (!isValidDateOnly_(from) || !isValidDateOnly_(to) || from > to) throw new Error('조회할 달력 날짜 범위가 올바르지 않습니다.');
+  const values = getRequiredScheduleSheet_(SCHEDULES_SHEET, SCHEDULE_HEADERS).getDataRange().getValues();
+  return values.slice(1).filter(row => row.some(Boolean) && String(row[1]) === session.userId).map(row => scheduleObject_(row)).filter(item => {
+    const startDate = item.start_datetime.slice(0, 10);
+    const endDate = item.end_datetime.slice(0, 10);
+    const repeats = item.repeat_type !== 'none' && (!item.repeat_until || item.repeat_until >= from);
+    return startDate <= to && (endDate >= from || repeats);
+  }).sort((a, b) => a.start_datetime.localeCompare(b.start_datetime) || a.title.localeCompare(b.title));
+}
+function scheduleObject_(row) {
+  return Object.fromEntries(SCHEDULE_FIELDS.map((header, index) => {
+    let value = row[index] == null ? '' : String(row[index]);
+    if (header === 'all_day') value = String(value).toLowerCase() === 'true' || value === '1';
+    if (header === 'repeat_interval') value = Number(value || 1);
+    return [header, value];
+  }));
+}
+function isValidDateOnly_(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false;
+  const date = new Date(value + 'T00:00:00Z');
+  return !isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+function isValidSeoulDateTime_(value) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+09:00$/.test(String(value || ''))) return false;
+  const date = new Date(value);
+  return !isNaN(date.getTime()) && new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 19) === value.slice(0, 19);
+}
+// 일정 저장·수정은 동일한 schedule_id 행을 갱신합니다. 신규/수정 모두 소유자와 작성자는 세션에서 정합니다.
+function saveSchedule_(session, request) {
+  const input = request.schedule || {};
+  const id = String(input.schedule_id || '').trim();
+  const title = String(input.title || '').trim();
+  const categoryId = String(input.category_id || '').trim();
+  const start = String(input.start_datetime || '').trim();
+  const end = String(input.end_datetime || '').trim();
+  const allDay = input.all_day === true || String(input.all_day).toLowerCase() === 'true';
+  const repeatType = String(input.repeat_type || 'none');
+  const repeatInterval = Number(input.repeat_interval || 1);
+  const repeatUntil = String(input.repeat_until || '').trim();
+  if (!title || title.length > 200) throw new Error('일정 제목을 1~200자로 입력하세요.');
+  if (!isValidSeoulDateTime_(start) || !isValidSeoulDateTime_(end)) throw new Error('일정 날짜와 시간 형식이 올바르지 않습니다.');
+  if (new Date(start).getTime() > new Date(end).getTime()) throw new Error('종료 일시는 시작 일시보다 빠를 수 없습니다.');
+  if (!['none', 'daily', 'weekly', 'monthly'].includes(repeatType)) throw new Error('반복 유형이 올바르지 않습니다.');
+  if (!Number.isInteger(repeatInterval) || repeatInterval < 1 || repeatInterval > 99) throw new Error('반복 간격은 1~99 사이의 정수여야 합니다.');
+  if (repeatUntil && (!isValidDateOnly_(repeatUntil) || repeatUntil < start.slice(0, 10))) throw new Error('반복 종료일은 시작 날짜 이후로 입력하세요.');
+  if (repeatType === 'none' && repeatUntil) throw new Error('반복하지 않는 일정에는 반복 종료일을 지정할 수 없습니다.');
+  const category = readScheduleCategories_().find(item => item.category_id === categoryId && item.is_active && /^#[0-9a-fA-F]{6}$/.test(item.color_hex));
+  if (!category) throw new Error('사용 가능한 카테고리를 선택하세요.');
+  const sheet = getRequiredScheduleSheet_(SCHEDULES_SHEET, SCHEDULE_HEADERS);
+  const values = sheet.getDataRange().getValues();
+  const index = id ? values.slice(1).findIndex(row => String(row[0]) === id && String(row[1]) === session.userId) : -1;
+  if (id && index < 0) throw new Error('수정할 일정을 찾을 수 없습니다.');
+  const existing = index >= 0 ? values[index + 1] : null;
+  const now = nowSeoul_();
+  const row = [existing ? String(existing[0]) : Utilities.getUuid(), session.userId, existing ? String(existing[2]) : session.name, title, categoryId, start, end, allDay, String(input.location || '').trim(), String(input.description || '').trim(), repeatType, repeatInterval, repeatType === 'none' ? '' : repeatUntil, existing ? String(existing[13]) : now, now];
+  if (existing) sheet.getRange(index + 2, 1, 1, SCHEDULE_HEADERS.length).setValues([row]); else sheet.appendRow(row);
+  return { ok: true, schedule: scheduleObject_(row) };
+}
+// 삭제 조건에 일정 ID와 세션 사용자 ID를 함께 넣어 다른 사용자의 일정은 지울 수 없게 합니다.
+function deleteSchedule_(session, request) {
+  const id = String(request.schedule_id || '').trim();
+  if (!id) throw new Error('삭제할 일정 ID가 없습니다.');
+  const sheet = getRequiredScheduleSheet_(SCHEDULES_SHEET, SCHEDULE_HEADERS);
+  const values = sheet.getDataRange().getValues();
+  const index = values.slice(1).findIndex(row => String(row[0]) === id && String(row[1]) === session.userId);
+  if (index < 0) throw new Error('삭제할 일정을 찾을 수 없습니다.');
+  sheet.deleteRow(index + 2);
+  return { ok: true };
 }
 
 function readLogs_() {
@@ -228,6 +439,7 @@ function appendLog_(session, action, year, studentId, studentName, detail) {
   const sheet = getOrCreateSheet_(LOGS_SHEET, LOG_HEADERS);
   sheet.appendRow([new Date(), session.userId, session.name, action, year || '', studentId || '', studentName || '', detail || '']);
 }
+// 자동 생성 대상(사용자, 상담, 로그 등)에만 사용합니다. 사용자가 만든 일정 시트 검증에는 사용하지 않습니다.
 function getOrCreateSheet_(name, headers) {
   const book = SpreadsheetApp.openById(SPREADSHEET_ID);
   let sheet = book.getSheetByName(name);
@@ -236,6 +448,7 @@ function getOrCreateSheet_(name, headers) {
   return sheet;
 }
 function now_() { return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'); }
+function nowSeoul_() { return Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss'); }
 function hash_(value) { return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, value, Utilities.Charset.UTF_8).map(b => ('0' + (b < 0 ? b + 256 : b).toString(16)).slice(-2)).join(''); }
 function hashPassword_(password) {
   const iterations = 60000;

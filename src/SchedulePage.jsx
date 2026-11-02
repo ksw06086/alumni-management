@@ -56,7 +56,9 @@ export default function SchedulePage({ auth }) {
   // 화면 상태(선택 월, 필터, 모달)와 서버 원본(categories/schedules)을 분리해 관리합니다.
   const [month, setMonth] = useState(currentSeoulMonth);
   const [categories, setCategories] = useState([]);
+  const [categoriesLoad, setCategoriesLoad] = useState({ status: 'loading', error: '' });
   const [schedules, setSchedules] = useState([]);
+  const [schedulesLoad, setSchedulesLoad] = useState({ status: 'loading', error: '' });
   const [hiddenCategoryIds, setHiddenCategoryIds] = useState([]);
   const [search, setSearch] = useState('');
   const [focusedDate, setFocusedDate] = useState('');
@@ -70,27 +72,36 @@ export default function SchedulePage({ auth }) {
   const rangeEnd = dateKey(gridDates[gridDates.length - 1]);
 
   const loadCategories = async () => {
-    const result = await send('scheduleCategories', auth.token);
-    setCategories(result.categories || []);
+    setCategoriesLoad({ status: 'loading', error: '' });
+    try {
+      const result = await send('scheduleCategories', auth.token);
+      setCategories(result.categories || []); setCategoriesLoad({ status: 'loaded', error: '' });
+    } catch (reason) { setCategoriesLoad({ status: 'error', error: reason.message }); throw reason; }
   };
   const loadSchedules = async (fromDate = rangeStart, toDate = rangeEnd) => {
-    const result = await send('schedules', auth.token, { fromDate, toDate });
-    setSchedules(result.schedules || []);
+    setSchedulesLoad({ status: 'loading', error: '' });
+    try {
+      const result = await send('schedules', auth.token, { fromDate, toDate });
+      setSchedules(result.schedules || []); setSchedulesLoad({ status: 'loaded', error: '' });
+    } catch (reason) { setSchedulesLoad({ status: 'error', error: reason.message }); throw reason; }
   };
+  const retryCategories = () => loadCategories().then(() => setError('')).catch(() => {});
+  const retrySchedules = () => loadSchedules(rangeStart, rangeEnd).then(() => setError('')).catch(() => {});
 
   // 로그인 사용자별 카테고리를 한 번 읽습니다. unmount 후 늦게 도착한 응답은 무시합니다.
   useEffect(() => {
     let active = true;
-    send('scheduleCategories', auth.token).then(result => { if (active) { setCategories(result.categories || []); setError(''); } }).catch(reason => { if (active) setError(reason.message); });
+    setCategoriesLoad({ status: 'loading', error: '' });
+    send('scheduleCategories', auth.token).then(result => { if (active) { setCategories(result.categories || []); setCategoriesLoad({ status: 'loaded', error: '' }); setError(''); } }).catch(reason => { if (active) { setCategoriesLoad({ status: 'error', error: reason.message }); setError(reason.message); } });
     return () => { active = false; };
   }, [auth.token]);
   // 월 이동 때 달력에 보이는 42일 범위만 요청합니다. 요청 범위가 바뀌면 이전 응답을 무시합니다.
   useEffect(() => {
     let active = true;
-    setBusy(true);
+    setSchedulesLoad({ status: 'loading', error: '' });
     send('schedules', auth.token, { fromDate: rangeStart, toDate: rangeEnd }).then(result => {
-      if (active) { setSchedules(result.schedules || []); setError(''); }
-    }).catch(reason => { if (active) setError(reason.message); }).finally(() => { if (active) setBusy(false); });
+      if (active) { setSchedules(result.schedules || []); setSchedulesLoad({ status: 'loaded', error: '' }); setError(''); }
+    }).catch(reason => { if (active) { setSchedulesLoad({ status: 'error', error: reason.message }); setError(reason.message); } });
     return () => { active = false; };
   }, [auth.token, rangeStart, rangeEnd]);
 
@@ -164,7 +175,7 @@ export default function SchedulePage({ auth }) {
     <div className="schedule-page-heading"><div><p className="schedule-eyebrow">PERSONAL PLANNER</p><h1>일정</h1><p>개인 일정과 반복 일정을 월간 달력에서 관리합니다.</p></div><button className="primary-button schedule-write" onClick={() => openNew()}><Plus size={17}/> 일정 쓰기</button></div>
     <section className="panel schedule-panel">
       <div className="schedule-toolbar"><div className="schedule-toolbar-left"><button className="outline-button" onClick={goToday}>오늘</button><button className="calendar-nav-button" aria-label="이전 달" onClick={() => setMonthOffset(-1)}><ChevronLeft size={20}/></button><button className="calendar-nav-button" aria-label="다음 달" onClick={() => setMonthOffset(1)}><ChevronRight size={20}/></button><h2>{monthLabel(month)}</h2><span className="calendar-view-label"><CalendarDays size={15}/> 월간</span></div><div className="schedule-search"><Search size={16}/><input aria-label="일정 제목 검색" placeholder="제목 검색" value={search} onChange={event => setSearch(event.target.value)}/>{search && <button aria-label="검색 지우기" onClick={() => setSearch('')}><X size={14}/></button>}</div></div>
-      <div className="schedule-layout"><aside className="schedule-sidebar"><h3>내 카테고리</h3><p>표시할 일정을 선택하세요.</p><div className="category-filter-list">{displayCategories.map(category => <label key={category.category_id} className={hiddenCategoryIds.includes(category.category_id) ? 'category-filter muted' : 'category-filter'}><input type="checkbox" checked={!hiddenCategoryIds.includes(category.category_id)} onChange={() => toggleCategory(category.category_id)}/><i style={{ backgroundColor: safeColor(category.color_hex) }}/><span>{category.category_name}</span></label>)}</div><button className="category-show-all" onClick={() => setHiddenCategoryIds([])}>모두 표시</button><div className="schedule-sidebar-hint"><Repeat2 size={15}/> 반복 일정은 종료일까지 자동으로 표시됩니다.</div></aside>
+      <div className="schedule-layout"><aside className="schedule-sidebar"><h3>내 카테고리</h3><p>표시할 일정을 선택하세요.</p><div className="category-filter-list">{categoriesLoad.status !== 'loaded' ? <ScheduleDataState state={categoriesLoad} onRetry={retryCategories}/> : displayCategories.length ? displayCategories.map(category => <label key={category.category_id} className={hiddenCategoryIds.includes(category.category_id) ? 'category-filter muted' : 'category-filter'}><input type="checkbox" checked={!hiddenCategoryIds.includes(category.category_id)} onChange={() => toggleCategory(category.category_id)}/><i style={{ backgroundColor: safeColor(category.color_hex) }}/><span>{category.category_name}</span></label>) : <small>등록된 데이터가 없습니다.</small>}</div><button className="category-show-all" onClick={() => setHiddenCategoryIds([])}>모두 표시</button><div className="schedule-sidebar-hint"><Repeat2 size={15}/> 반복 일정은 종료일까지 자동으로 표시됩니다.</div></aside>
         <div className="calendar-scroll"><div className="month-calendar" aria-label={`${monthLabel(month)} 월간 달력`}>
           <div className="calendar-weekdays">{DAY_NAMES.map((day, index) => <div key={day} className={index === 0 ? 'sunday' : index === 6 ? 'saturday' : ''}>{day}</div>)}</div>
           {/* 긴 일정은 주 단위 막대, 하루 일정은 날짜 셀 안의 이벤트로 렌더링합니다. */}
@@ -190,20 +201,26 @@ export default function SchedulePage({ auth }) {
               })}
             </div>;
           })}</div>
+          {schedulesLoad.status !== 'loaded' && <div className="calendar-data-state"><ScheduleDataState state={schedulesLoad} onRetry={retrySchedules}/></div>}
         </div></div>
       </div>
     </section>
     <section className="panel schedule-agenda"><div className="panel-title"><div><h2>{titleForDate}</h2><p>{focusedDate ? '선택한 날짜의 일정' : '이 달에 시작하는 일정'}</p></div><button className="outline-button" onClick={() => openNew(focusedDate || undefined)}><Plus size={15}/> 일정 추가</button></div>
-      {agendaEvents.length ? <div className="agenda-list">{agendaEvents.map(event => {
+      {schedulesLoad.status !== 'loaded' ? <ScheduleDataState state={schedulesLoad} onRetry={retrySchedules}/> : agendaEvents.length ? <div className="agenda-list">{agendaEvents.map(event => {
         const category = categoriesById[event.category_id];
         return <button className="agenda-event" key={eventKey(event)} onClick={() => setDetail({ ...event, _category: category })}><i style={{ backgroundColor: safeColor(category?.color_hex) }}/><span className="agenda-date">{event.occurrence_start_date === event.occurrence_end_date ? formatDate(event.occurrence_start_date) : `${formatDate(event.occurrence_start_date)} – ${formatDate(event.occurrence_end_date)}`}</span><span className="agenda-time">{event.all_day ? '종일' : `${timeValue(event.start_datetime)}–${timeValue(event.end_datetime)}`}</span><b>{event.title}</b><small>{category?.category_name || '기타'}</small></button>;
-      })}</div> : <div className="schedule-empty">{search ? '검색 조건에 맞는 일정이 없습니다.' : focusedDate ? '선택한 날짜에 일정이 없습니다.' : '이번 달에 등록된 일정이 없습니다.'}</div>}
+      })}</div> : <div className="schedule-empty">{search ? '검색 조건에 맞는 일정이 없습니다.' : focusedDate ? '선택한 날짜에 일정이 없습니다.' : '등록된 데이터가 없습니다.'}</div>}
     </section>
     {(error || notice) && <p className={`schedule-message ${error ? 'error' : ''}`} role="status">{error || notice}</p>}
     {busy && <div className="schedule-loading" role="status">일정을 불러오거나 저장하고 있습니다…</div>}
     {editor && <ScheduleEditor value={editor} categories={categories.filter(category => category.is_active || category.category_id === editor.category_id)} busy={busy} onChange={setEditor} onClose={() => { setEditor(null); setError(''); }} onSave={save}/>}
     {detail && <ScheduleDetail schedule={detail} category={detail._category || categoriesById[detail.category_id]} onClose={() => setDetail(null)} onEdit={() => openEdit(detail)} onDelete={() => remove(detail)}/>}
   </div>;
+}
+
+function ScheduleDataState({ state, onRetry }) {
+  if (state.status === 'error') return <div className="data-state data-state-error" role="alert"><span>데이터를 불러오지 못했습니다. 다시 시도해 주세요.</span>{state.error && <small title={state.error}>{state.error}</small>}<button className="outline-button" onClick={onRetry}>다시 시도</button></div>;
+  return <div className="data-state" role="status" aria-live="polite"><span className="data-spinner" aria-hidden="true"/><span>데이터를 불러오는 중입니다...</span></div>;
 }
 
 // 편집기는 부모가 가진 draft만 갱신하고, 저장/닫기 정책은 부모 콜백에 위임합니다.

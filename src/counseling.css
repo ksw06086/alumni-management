@@ -14,3 +14,63 @@
     width: 100%;
   }
 }
+
+.design-shell main:has(.detail-panel) {
+  display: grid;
+  grid-template-columns: minmax(280px, .9fr) minmax(0, 1.1fr);
+  grid-template-areas: "filters filters" "list detail" "list counsel";
+  align-content: start;
+  column-gap: 18px;
+}
+.design-shell main:has(.detail-panel) > .filters { grid-area: filters; }
+.design-shell main:has(.detail-panel) > .stats { display: none; }
+.design-shell main:has(.detail-panel) > .table-panel { grid-area: list; min-width: 0; align-self: start; }
+.design-shell main:has(.detail-panel) > .detail-panel { grid-area: detail; min-width: 0; align-self: start; }
+.design-shell main:has(.detail-panel) > .student-counseling-panel { grid-area: counsel; min-width: 0; align-self: start; }
+.design-shell main:has(.detail-panel) > .detail-panel { margin-bottom: 0; }
+.design-shell main:has(.detail-panel) > .student-counseling-panel { margin-top: 8px; }
+.design-shell main:has(.detail-panel) > .notice { grid-column: 1 / -1; }
+.student-counseling-panel .panel-title { justify-content: space-between; padding: 16px 20px; }
+.student-counseling-panel .panel-title h2 { font-size: 19px; }
+.student-counseling-panel .panel-title h2 small { font-size: 13px; }
+.student-counseling-panel .primary-button { font-size: 13px; padding: 10px 14px; }
+.student-counseling-list { display: grid; padding: 4px 20px; }
+.student-counseling-row { display: grid; grid-template-columns: minmax(145px, auto) minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 54px; padding: 10px 2px; border: 0; border-bottom: 1px solid #edf0f4; background: #fff; color: #40516b; text-align: left; font: inherit; cursor: pointer; }
+.student-counseling-row:hover { background: #f8fafc; }
+.student-counseling-row time { color: #536783; font-size: 13px; font-weight: 650; white-space: nowrap; }
+.student-counseling-row span { overflow: hidden; color: #344660; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.student-counseling-row small { color: #8995a7; font-size: 12px; white-space: nowrap; }
+.counseling-pagination { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 12px; }
+.counseling-pagination button { min-width: 32px; height: 30px; padding: 0 8px; border: 1px solid #dbe2ec; border-radius: 6px; background: #fff; color: #536783; font: inherit; font-size: 12px; cursor: pointer; }
+.counseling-pagination button.active { border-color: #1e3a6e; background: #1e3a6e; color: #fff; }
+.counseling-pagination button:disabled { opacity: .45; cursor: default; }
+.counseling-modal-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 20px; background: #11182780; }
+.counseling-modal { display: flex; flex-direction: column; width: min(620px, 100%); max-height: min(88vh, 760px); overflow: hidden; border-radius: 12px; background: #fff; box-shadow: 0 22px 70px #11182755; }
+.counseling-modal > header, .counseling-modal > footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 15px 20px; border-bottom: 1px solid #edf0f4; }
+.counseling-modal > header h2 { margin: 0; color: #223958; font-size: 17px; }
+.counseling-modal > footer { justify-content: flex-end; border-top: 1px solid #edf0f4; border-bottom: 0; }
+.counseling-modal-body { display: grid; gap: 16px; overflow: auto; padding: 20px; color: #40516b; }
+.counseling-modal-body dl { display: grid; grid-template-columns: 90px 1fr; gap: 8px 12px; margin: 0; font-size: 13px; }
+.counseling-modal-body dt { color: #8793a5; }
+.counseling-modal-body dd { margin: 0; color: #334967; }
+.counseling-full-content { min-height: 80px; padding: 14px; border-radius: 8px; background: #f7f9fc; color: #47566d; font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.student-counseling-panel .empty-detail { padding: 30px 20px; font-size: 14px; }
+.counseling-full-content { font-size: 15px; }
+.counseling-modal-body { font-size: 14px; }
+.counseling-modal > header h2 { font-size: 19px; }
+.counseling-modal > footer button { font-size: 13px; }
+.counseling-modal-body > small { color: #8995a7; font-size: 11px; }
+.counseling-modal-body .field textarea { min-height: 150px; resize: vertical; }
+.danger-text-button { margin-right: auto; border: 0; background: transparent; color: #b54343; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+@media (max-width: 900px) {
+  .design-shell main:has(.detail-panel) { grid-template-columns: minmax(0, 1fr); grid-template-areas: "filters" "list" "detail" "counsel"; }
+  .student-counseling-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .student-counseling-row span { grid-column: 1; grid-row: 2; }
+  .student-counseling-row small { grid-column: 2; grid-row: 1 / span 2; }
+}
+
+.table-wrap tbody tr.clickable-row { cursor: pointer; }
+.table-wrap tbody tr.clickable-row:hover td { background: #f1f6fc; }
+.table-wrap tbody tr.clickable-row.selected td { background: #e9f1fc; }
+.table-wrap tbody tr.clickable-row.selected td:first-child { border-left: 4px solid #1e3a6e; }
+.table-wrap tbody tr.clickable-row:focus-visible { outline: 2px solid #6281b1; outline-offset: -2px; }
