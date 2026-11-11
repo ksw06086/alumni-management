@@ -6,3 +6,8 @@ compatibility_date = "2026-09-30"
 # 배포 후 Cloudflare Dashboard에서 APPS_SCRIPT_URL을 실제 Apps Script /exec URL로 설정하세요.
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxDJYMzpY_Toai0uj_QR6kseFnINf64zkO1oPYxfTaHunfbTRtRwKRyXfe7zcCDb1bvag/exec"
 ALLOWED_ORIGINS = "https://ksw06086.github.io,http://localhost:5173"
+
+# 자료실 활성화 후 `npx wrangler kv namespace create ARCHIVE_UPLOADS` 실행 결과의 ID를 넣고 주석을 해제하세요.
+[[kv_namespaces]]
+binding = "ARCHIVE_UPLOADS"
+id = "58ccfecbfcca4ee9a15ba0d8fe9c887d"

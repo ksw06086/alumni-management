@@ -58,7 +58,7 @@ function makeHarness() {
   const context = vm.createContext({
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => ({ SPREADSHEET_ID: 'test-sheet', GOOGLE_CLIENT_ID: 'test-client' })[key] || null }) },
     SpreadsheetApp: { openById: () => workbook, getScriptTimeZone: () => 'UTC' },
-    CacheService: { getScriptCache: () => cache }, LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) }, Utilities,
+    CacheService: { getScriptCache: () => cache }, LockService: { getScriptLock: () => ({ tryLock: () => true, waitLock() {}, releaseLock() {} }) }, Utilities,
     Session: { getScriptTimeZone: () => 'UTC' },
     UrlFetchApp: { fetch: () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify(googleProfile) }) },
     ContentService: { createTextOutput: text => ({ text, setMimeType() { return this; } }), MimeType: { JSON: 'application/json' } },
@@ -423,4 +423,27 @@ test('graduate transfer follows the server year when the calendar year changes',
   assert.equal(result.ok, true, result.error);
   assert.equal(result.graduationYear, '2027');
   assert.equal(app.sheets.get('2027').rows[1][0], '2027');
+});
+
+test('archive posts are visible to authenticated users and write operations are admin-only', () => {
+  const app = makeHarness();
+  const admin = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
+  const created = app.call({ action: 'saveArchivePost', token: admin.token, post: { title: '  자료 안내  ', content: '첫 줄\n둘째 줄' } });
+  assert.equal(created.ok, true, created.error);
+  assert.ok(app.sheets.has('archive_posts'));
+  assert.ok(app.sheets.has('archive_files'));
+  const posts = app.call({ action: 'archivePosts', token: admin.token });
+  assert.equal(posts.posts[0].title, '자료 안내');
+  assert.equal(posts.posts[0].content, '첫 줄\n둘째 줄');
+  assert.equal(posts.posts[0].authorName, 'Admin User');
+  assert.equal(app.call({ action: 'archivePostView', token: admin.token, postId: created.postId }).viewCount, 1);
+  assert.equal(app.call({ action: 'saveArchivePost', token: admin.token, post: { postId: created.postId, title: '수정됨', content: '' } }).ok, true);
+
+  app.setGoogleProfile({ email: 'legacy@example.com', email_verified: true, aud: 'test-client' });
+  const user = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
+  assert.equal(app.call({ action: 'archivePosts', token: user.token }).posts[0].title, '수정됨');
+  assert.equal(app.call({ action: 'saveArchivePost', token: user.token, post: { title: '권한 우회', content: '' } }).ok, false);
+  assert.equal(app.call({ action: 'deleteArchivePost', token: user.token, postId: created.postId }).ok, false);
+  assert.equal(app.call({ action: 'deleteArchivePost', token: admin.token, postId: created.postId }).ok, true);
+  assert.equal(app.call({ action: 'archivePosts', token: admin.token }).posts.length, 0);
 });

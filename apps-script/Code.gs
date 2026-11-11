@@ -16,6 +16,17 @@ const LOG_HEADERS = ['timestamp', 'userId', 'userName', 'action', 'targetYear', 
 const COUNSELING_HEADERS = ['counselingId', 'graduationYear', 'studentId', 'studentName', 'counseledAt', 'content', 'authorUserId', 'authorName', 'createdAt', 'updatedAt'];
 const SCHEDULE_HEADERS = ['일정ID', '사용자ID', '작성자명', '일정제목', '카테고리ID', '시작일시', '종료일시', '종일여부', '장소', '상세설명', '반복유형', '반복간격', '반복종료일', '등록일시', '수정일시'];
 const SCHEDULE_CATEGORY_HEADERS = ['카테고리ID', '카테고리명', '색상코드', '사용여부', '정렬순서'];
+const ARCHIVE_POSTS_SHEET = 'archive_posts';
+const ARCHIVE_FILES_SHEET = 'archive_files';
+const ARCHIVE_DRIVE_FOLDER_NAME = '졸업생관리프로그램 자료실';
+const ARCHIVE_POST_HEADERS = ['post_id', 'title', 'content', 'author_id', 'author_name', 'created_at', 'updated_at', 'view_count', 'status'];
+const ARCHIVE_FILE_HEADERS = ['file_id', 'post_id', 'drive_file_id', 'original_filename', 'stored_filename', 'file_type', 'mime_type', 'file_size', 'drive_folder_id', 'uploaded_by', 'uploaded_at', 'status'];
+const ARCHIVE_UPLOAD_LIMITS = { video: 500000000, other: 200000000 };
+const ARCHIVE_ALLOWED = {
+  png: ['image/png','image'], jpg: ['image/jpeg','image'], jpeg: ['image/jpeg','image'], webp: ['image/webp','image'], gif: ['image/gif','image'], bmp: ['image/bmp','image'],
+  mp4: ['video/mp4','video'], mov: ['video/quicktime','video'], webm: ['video/webm','video'], avi: ['video/x-msvideo','video'],
+  pdf: ['application/pdf','document'], txt: ['text/plain','document'], csv: ['text/csv','document'], xlsx: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','document'], xls: ['application/vnd.ms-excel','document'], doc: ['application/msword','document'], docx: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document','document'], hwp: ['application/x-hwp','document'], hwpx: ['application/vnd.hancom.hwpx','document'], ppt: ['application/vnd.ms-powerpoint','document'], pptx: ['application/vnd.openxmlformats-officedocument.presentationml.presentation','document'], zip: ['application/zip','archive']
+};
 const SCHEDULE_FIELDS = ['schedule_id', 'user_id', 'user_name', 'title', 'category_id', 'start_datetime', 'end_datetime', 'all_day', 'location', 'description', 'repeat_type', 'repeat_interval', 'repeat_until', 'created_at', 'updated_at'];
 const DATA_HEADERS = ['graduationYear', 'studentId', 'name', 'gender', 'phone', 'address', 'status', 'company', 'field', 'detail', 'gpa', 'updatedAt'];
 const VALID_STATUSES = ['취업자', '진학자', '미취업자', '군입대자', '기타'];
@@ -61,6 +72,18 @@ function route_(request) {
       case 'deleteSchedule': return withSession_(request, ['admin', 'user'], session => deleteSchedule_(session, request));
       case 'statistics': return withSession_(request, ['admin', 'user'], () => ({ ok: true, statistics: getStatistics_() }));
       case 'logs': return withSession_(request, ['admin'], () => ({ ok: true, logs: readLogs_() }));
+      case 'archivePosts': return withSession_(request, ['admin', 'user'], () => ({ ok: true, posts: readArchivePosts_() }));
+      case 'saveArchivePost': return withSession_(request, ['admin'], session => saveArchivePost_(session, request.post || {}));
+      case 'publishArchivePost': return withSession_(request, ['admin'], session => publishArchivePost_(session, request.postId));
+      case 'deleteArchivePost': return withSession_(request, ['admin'], session => deleteArchivePost_(session, request.postId));
+      case 'archivePostView': return withSession_(request, ['admin', 'user'], () => incrementArchiveView_(request.postId));
+      case 'archiveUploadStart': return archiveBridge_(request, () => withSession_(request, ['admin'], session => archiveUploadStart_(session, request)));
+      case 'archiveUploadComplete': return archiveBridge_(request, () => withSession_(request, ['admin'], session => archiveUploadComplete_(session, request)));
+      case 'archiveDownloadInfo': return archiveBridge_(request, () => withSession_(request, ['admin', 'user'], () => archiveDownloadInfo_(request.fileId)));
+      case 'archivePrepareFileDelete': return archiveBridge_(request, () => withSession_(request, ['admin'], session => archivePrepareFileDelete_(session, request.fileId)));
+      case 'archiveCompleteFileDelete': return archiveBridge_(request, () => withSession_(request, ['admin'], session => archiveCompleteFileDelete_(session, request.fileId)));
+      case 'archivePreparePostDelete': return archiveBridge_(request, () => withSession_(request, ['admin'], () => archivePreparePostDelete_(request.postId)));
+      case 'archiveCompletePostDelete': return archiveBridge_(request, () => withSession_(request, ['admin'], session => archiveCompletePostDelete_(session, request.postId, request.failedFileIds || [])));
       case 'logout': return logout_(request);
       default: throw new Error('알 수 없는 요청입니다.');
     }
@@ -654,6 +677,206 @@ function readLogs_() {
 function appendLog_(session, action, year, studentId, studentName, detail) {
   const sheet = getOrCreateSheet_(LOGS_SHEET, LOG_HEADERS);
   sheet.appendRow([new Date(), session.userId, session.name, action, year || '', studentId || '', studentName || '', detail || '']);
+}
+function readArchivePosts_() {
+  const postSheet = getOrCreateSheet_(ARCHIVE_POSTS_SHEET, ARCHIVE_POST_HEADERS);
+  getOrCreateSheet_(ARCHIVE_FILES_SHEET, ARCHIVE_FILE_HEADERS);
+  const fileRows = getOrCreateSheet_(ARCHIVE_FILES_SHEET, ARCHIVE_FILE_HEADERS).getDataRange().getValues().slice(1);
+  const filesByPost = {};
+  fileRows.filter(row => ['active', 'delete_failed'].includes(String(row[11]))).forEach(row => {
+    const key = String(row[1]);
+    if (!filesByPost[key]) filesByPost[key] = [];
+    filesByPost[key].push({ fileId: String(row[0]), originalFilename: String(row[3]), fileType: String(row[5]), mimeType: String(row[6]), fileSize: Number(row[7]) || 0 });
+  });
+  return postSheet.getDataRange().getValues().slice(1).filter(row => row.some(Boolean) && String(row[8]) === 'active').map(row => ({
+    postId: String(row[0]), title: String(row[1]), content: String(row[2]), authorId: String(row[3]), authorName: String(row[4]),
+    createdAt: archiveDate_(row[5]), updatedAt: archiveDate_(row[6]), viewCount: Number(row[7]) || 0, files: filesByPost[String(row[0])] || []
+  })).reverse();
+}
+function saveArchivePost_(session, input) {
+  const title = String(input.title || '').trim();
+  if (!title) throw new Error('자료 제목을 입력해 주세요.');
+  if (title.length > 200) throw new Error('자료 제목은 200자 이내로 입력해 주세요.');
+  const content = String(input.content || '');
+  if (content.length > 50000) throw new Error('자료 내용은 50,000자 이내로 입력해 주세요.');
+  getOrCreateSheet_(ARCHIVE_FILES_SHEET, ARCHIVE_FILE_HEADERS);
+  const sheet = getOrCreateSheet_(ARCHIVE_POSTS_SHEET, ARCHIVE_POST_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  const postId = String(input.postId || '').trim();
+  const existingIndex = postId ? rows.slice(1).findIndex(row => String(row[0]) === postId && String(row[8]) === 'active') : -1;
+  if (postId && existingIndex < 0) throw new Error('수정할 게시글을 찾을 수 없습니다.');
+  const timestamp = nowSeoul_();
+  if (existingIndex >= 0) {
+    const rowNumber = existingIndex + 2;
+    sheet.getRange(rowNumber, 2, 1, 1).setValue(title);
+    sheet.getRange(rowNumber, 3, 1, 1).setValue(content);
+    sheet.getRange(rowNumber, 7, 1, 1).setValue(timestamp);
+    appendLog_(session, '자료실 수정', '', postId, title, '자료 게시글 수정');
+    return { ok: true, postId: postId };
+  }
+  const newId = Utilities.getUuid();
+  sheet.appendRow([newId, title, content, session.userId, session.name, timestamp, timestamp, 0, input.publish === false ? 'draft' : 'active']);
+  appendLog_(session, '자료실 등록', '', newId, title, '자료 게시글 등록');
+  return { ok: true, postId: newId };
+}
+function publishArchivePost_(session, requestedId) {
+  const postId = String(requestedId || '').trim();
+  const sheet = getOrCreateSheet_(ARCHIVE_POSTS_SHEET, ARCHIVE_POST_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  const index = rows.slice(1).findIndex(row => String(row[0]) === postId && ['draft', 'active'].includes(String(row[8])));
+  if (index < 0) throw new Error('게시할 자료를 찾을 수 없습니다.');
+  sheet.getRange(index + 2, 9).setValue('active');
+  sheet.getRange(index + 2, 7).setValue(nowSeoul_());
+  appendLog_(session, '자료실 공개', '', postId, String(rows[index + 1][1]), '자료 게시글 공개');
+  return { ok: true, postId: postId };
+}
+function deleteArchivePost_(session, requestedId) {
+  const postId = String(requestedId || '').trim();
+  if (!postId) throw new Error('삭제할 게시글 ID가 없습니다.');
+  const sheet = getOrCreateSheet_(ARCHIVE_POSTS_SHEET, ARCHIVE_POST_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  const index = rows.slice(1).findIndex(row => String(row[0]) === postId && String(row[8]) === 'active');
+  if (index < 0) throw new Error('삭제할 게시글을 찾을 수 없습니다.');
+  sheet.getRange(index + 2, 9).setValue('deleted');
+  sheet.getRange(index + 2, 7).setValue(nowSeoul_());
+  appendLog_(session, '자료실 삭제', '', postId, String(rows[index + 1][1]), '자료 게시글 삭제');
+  return { ok: true };
+}
+function incrementArchiveView_(requestedId) {
+  const postId = String(requestedId || '').trim();
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const sheet = getOrCreateSheet_(ARCHIVE_POSTS_SHEET, ARCHIVE_POST_HEADERS);
+    const rows = sheet.getDataRange().getValues();
+    const index = rows.slice(1).findIndex(row => String(row[0]) === postId && String(row[8]) === 'active');
+    if (index < 0) throw new Error('자료 게시글을 찾을 수 없습니다.');
+    const rowNumber = index + 2;
+    const count = (Number(rows[rowNumber - 1][7]) || 0) + 1;
+    sheet.getRange(rowNumber, 8).setValue(count);
+    return { ok: true, viewCount: count };
+  } finally { lock.releaseLock(); }
+}
+function archiveDate_(value) {
+  if (value instanceof Date) return Utilities.formatDate(value, 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss');
+  return String(value == null ? '' : value);
+}
+function archiveBridge_(request, callback) {
+  const expected = PropertiesService.getScriptProperties().getProperty('ARCHIVE_BRIDGE_SECRET');
+  if (!expected || String(request.bridgeSecret || '') !== expected) throw new Error('자료실 서버 연결 인증에 실패했습니다.');
+  return callback();
+}
+function archiveUploadStart_(session, request) {
+  const postId = String(request.postId || '').trim();
+  const files = Array.isArray(request.files) ? request.files : [];
+  if (!postId || !files.length) throw new Error('게시글과 첨부파일을 확인해 주세요.');
+  if (files.length > 30) throw new Error('한 번에 첨부할 수 있는 파일은 최대 30개입니다.');
+  const postSheet = getOrCreateSheet_(ARCHIVE_POSTS_SHEET, ARCHIVE_POST_HEADERS);
+  const postRows = postSheet.getDataRange().getValues();
+  if (!postRows.slice(1).some(row => String(row[0]) === postId && ['active', 'draft'].includes(String(row[8])))) throw new Error('첨부할 게시글을 찾을 수 없습니다.');
+  const totals = { video: 0, other: 0 };
+  const normalized = files.map(file => {
+    const originalFilename = String(file.name || '').replace(/[\\/\u0000-\u001f]/g, '_').trim().slice(0, 240);
+    const ext = originalFilename.includes('.') ? originalFilename.split('.').pop().toLowerCase() : '';
+    const rule = ARCHIVE_ALLOWED[ext];
+    const size = Number(file.size);
+    const mimeType = String(file.mimeType || 'application/octet-stream').toLowerCase();
+    if (!rule || !originalFilename || !Number.isSafeInteger(size) || size <= 0) throw new Error('허용되지 않는 파일 형식이거나 파일 정보가 올바르지 않습니다.');
+    if (mimeType !== 'application/octet-stream' && mimeType !== rule[0]) throw new Error(originalFilename + ' 파일의 MIME 형식이 확장자와 일치하지 않습니다.');
+    const group = rule[1] === 'video' ? 'video' : 'other';
+    totals[group] += size;
+    if (totals[group] > ARCHIVE_UPLOAD_LIMITS[group]) throw new Error(group === 'video' ? '동영상 파일은 한 번의 업로드에서 최대 500MB까지 첨부할 수 있습니다.' : '이미지·문서·압축파일은 한 번의 업로드에서 합계 200MB까지 첨부할 수 있습니다.');
+    return { originalFilename: originalFilename, extension: ext, size: size, mimeType: mimeType === 'application/octet-stream' ? rule[0] : mimeType, fileType: rule[1], fileId: Utilities.getUuid() };
+  });
+  const props = PropertiesService.getScriptProperties();
+  let folderId = props.getProperty('ARCHIVE_DRIVE_FOLDER_ID');
+  if (!folderId) {
+    const folders = DriveApp.getFoldersByName(ARCHIVE_DRIVE_FOLDER_NAME);
+    const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(ARCHIVE_DRIVE_FOLDER_NAME);
+    folderId = folder.getId();
+    props.setProperty('ARCHIVE_DRIVE_FOLDER_ID', folderId);
+  }
+  const token = ScriptApp.getOAuthToken();
+  const sessions = normalized.map(file => {
+    const storedFilename = Utilities.getUuid() + '.' + file.extension;
+    const metadata = { name: storedFilename, mimeType: file.mimeType, parents: [folderId], appProperties: { archivePostId: postId, archiveFileId: file.fileId }, description: '자료실 게시글 첨부 파일' };
+    const response = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,mimeType,size,parents', {
+      method: 'post', contentType: 'application/json; charset=UTF-8', payload: JSON.stringify(metadata), muteHttpExceptions: true,
+      headers: { Authorization: 'Bearer ' + token, 'X-Upload-Content-Type': file.mimeType, 'X-Upload-Content-Length': String(file.size) }
+    });
+    if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
+      console.error('Archive resumable session initialization failed', response.getResponseCode(), response.getContentText().slice(0, 500));
+      throw new Error('Google Drive 업로드 준비에 실패했습니다.');
+    }
+    const headers = response.getAllHeaders();
+    const sessionUrl = headers.Location || headers.location;
+    if (!sessionUrl) throw new Error('Google Drive가 업로드 세션 주소를 반환하지 않았습니다.');
+    return { uploadId: file.fileId, sessionUrl: String(sessionUrl), postId: postId, fileId: file.fileId, originalFilename: file.originalFilename, extension: file.extension, storedFilename: storedFilename, fileType: file.fileType, mimeType: file.mimeType, fileSize: file.size, driveFolderId: folderId, uploadedBy: session.userId, authorName: session.name };
+  });
+  return { ok: true, uploads: sessions };
+}
+function archiveUploadComplete_(session, request) {
+  const fileId = String(request.fileId || '').trim();
+  const postId = String(request.postId || '').trim();
+  const driveFileId = String(request.driveFileId || '').trim();
+  if (!fileId || !postId || !driveFileId) throw new Error('업로드 파일 정보를 확인할 수 없습니다.');
+  const token = ScriptApp.getOAuthToken();
+  const verify = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(driveFileId) + '?fields=id,name,mimeType,size,parents,appProperties', { headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true });
+  if (verify.getResponseCode() !== 200) throw new Error('Google Drive에 저장된 파일을 확인하지 못했습니다.');
+  const actual = JSON.parse(verify.getContentText());
+  if (actual.appProperties?.archivePostId !== postId || actual.appProperties?.archiveFileId !== fileId || !actual.parents?.includes(String(request.driveFolderId || ''))) throw new Error('Google Drive 파일 검증에 실패했습니다.');
+  const sheet = getOrCreateSheet_(ARCHIVE_FILES_SHEET, ARCHIVE_FILE_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  const existing = rows.slice(1).findIndex(row => String(row[0]) === fileId);
+  const data = [fileId, postId, driveFileId, request.originalFilename, request.storedFilename, request.fileType, request.mimeType, Number(actual.size) || Number(request.fileSize) || 0, request.driveFolderId, session.userId, nowSeoul_(), 'active'];
+  if (existing >= 0) sheet.getRange(existing + 2, 1, 1, data.length).setValues([data]); else sheet.appendRow(data);
+  return { ok: true, fileId: fileId, fileSize: Number(actual.size) || Number(request.fileSize) || 0 };
+}
+function archiveDownloadInfo_(fileId) {
+  const rows = getOrCreateSheet_(ARCHIVE_FILES_SHEET, ARCHIVE_FILE_HEADERS).getDataRange().getValues();
+  const row = rows.slice(1).find(item => String(item[0]) === String(fileId) && String(item[11]) === 'active');
+  if (!row) throw new Error('다운로드할 파일을 찾을 수 없습니다.');
+  const posts = getOrCreateSheet_(ARCHIVE_POSTS_SHEET, ARCHIVE_POST_HEADERS).getDataRange().getValues();
+  if (!posts.slice(1).some(post => String(post[0]) === String(row[1]) && String(post[8]) === 'active')) throw new Error('게시글에 연결된 파일이 아닙니다.');
+  return { ok: true, driveToken: ScriptApp.getOAuthToken(), driveFileId: String(row[2]), filename: String(row[3]), mimeType: String(row[6]), fileSize: Number(row[7]) || 0 };
+}
+function archivePrepareFileDelete_(session, fileId) {
+  const rows = getOrCreateSheet_(ARCHIVE_FILES_SHEET, ARCHIVE_FILE_HEADERS).getDataRange().getValues();
+  const row = rows.slice(1).find(item => String(item[0]) === String(fileId) && ['active', 'delete_failed'].includes(String(item[11])));
+  if (!row) throw new Error('삭제할 파일을 찾을 수 없습니다.');
+  return { ok: true, fileId: String(row[0]), driveFileId: String(row[2]), driveToken: ScriptApp.getOAuthToken() };
+}
+function archiveCompleteFileDelete_(session, fileId) {
+  const sheet = getOrCreateSheet_(ARCHIVE_FILES_SHEET, ARCHIVE_FILE_HEADERS);
+  const rows = sheet.getDataRange().getValues();
+  const index = rows.slice(1).findIndex(row => String(row[0]) === String(fileId));
+  if (index < 0) throw new Error('삭제할 파일 메타데이터를 찾을 수 없습니다.');
+  sheet.getRange(index + 2, 12).setValue('deleted');
+  appendLog_(session, '자료실 파일 삭제', '', String(fileId), String(rows[index + 1][3]), 'Drive 첨부파일 삭제');
+  return { ok: true };
+}
+function archivePreparePostDelete_(postId) {
+  const id = String(postId || '').trim();
+  const posts = getOrCreateSheet_(ARCHIVE_POSTS_SHEET, ARCHIVE_POST_HEADERS).getDataRange().getValues();
+  if (!posts.slice(1).some(row => String(row[0]) === id && String(row[8]) === 'active')) throw new Error('삭제할 게시글을 찾을 수 없습니다.');
+  const files = getOrCreateSheet_(ARCHIVE_FILES_SHEET, ARCHIVE_FILE_HEADERS).getDataRange().getValues().slice(1).filter(row => String(row[1]) === id && ['active', 'delete_failed'].includes(String(row[11]))).map(row => ({ fileId: String(row[0]), driveFileId: String(row[2]) }));
+  return { ok: true, postId: id, files: files, driveToken: ScriptApp.getOAuthToken() };
+}
+function archiveCompletePostDelete_(session, postId, failedFileIds) {
+  const id = String(postId || '').trim();
+  const failed = new Set((Array.isArray(failedFileIds) ? failedFileIds : []).map(String));
+  const files = getOrCreateSheet_(ARCHIVE_FILES_SHEET, ARCHIVE_FILE_HEADERS);
+  const rows = files.getDataRange().getValues();
+  rows.slice(1).forEach((row, index) => { if (String(row[1]) === id) files.getRange(index + 2, 12).setValue(failed.has(String(row[0])) ? 'delete_failed' : 'deleted'); });
+  const posts = getOrCreateSheet_(ARCHIVE_POSTS_SHEET, ARCHIVE_POST_HEADERS);
+  const postRows = posts.getDataRange().getValues();
+  const index = postRows.slice(1).findIndex(row => String(row[0]) === id);
+  if (index < 0) throw new Error('삭제할 게시글을 찾을 수 없습니다.');
+  posts.getRange(index + 2, 9).setValue(failed.size ? 'active' : 'deleted');
+  posts.getRange(index + 2, 7).setValue(nowSeoul_());
+  appendLog_(session, failed.size ? '자료실 파일 정리 실패' : '자료실 삭제', '', id, String(postRows[index + 1][1]), failed.size ? '일부 Drive 파일 삭제 실패' : '게시글 및 첨부파일 삭제');
+  if (failed.size) throw new Error('게시글 삭제 중 일부 Drive 파일 정리에 실패했습니다. 관리자 확인 후 다시 시도해 주세요.');
+  return { ok: true };
 }
 // 자동 생성 대상(사용자, 상담, 로그 등)에만 사용합니다. 사용자가 만든 일정 시트 검증에는 사용하지 않습니다.
 function getOrCreateSheet_(name, headers) {

@@ -57,3 +57,46 @@ test('Cloudflare Worker request policy and proxy behavior', async t => {
     } finally { globalThis.fetch = originalFetch; }
   });
 });
+
+test('Cloudflare Worker archive upload sessions and bounded chunk proxy', async t => {
+  await t.test('requires the configured upload session KV', async () => {
+    const response = await worker.fetch(request('POST', { 'Content-Type': 'application/json' }, JSON.stringify({ action: 'archiveUploadStart', token: 'admin', postId: 'p-1', files: [] })), env);
+    assert.equal(response.status, 503);
+  });
+
+  await t.test('keeps the Google resumable URL on the Worker and saves its session in KV', async () => {
+    const values = new Map();
+    const kv = { get: async key => values.get(key) || null, put: async (key, value) => values.set(key, value), delete: async key => values.delete(key) };
+    const originalFetch = globalThis.fetch;
+    let forwarded;
+    globalThis.fetch = async (_url, init) => { forwarded = JSON.parse(init.body); return new Response(JSON.stringify({ ok: true, uploads: [{ uploadId: 'f-1', sessionUrl: 'https://www.googleapis.com/upload/drive/v3/files?upload_id=secret', postId: 'p-1', fileId: 'f-1', originalFilename: 'a.txt', extension: 'txt', mimeType: 'text/plain', fileType: 'document', fileSize: 4 }] })); };
+    try {
+      const response = await worker.fetch(request('POST', { 'Content-Type': 'application/json' }, JSON.stringify({ action: 'archiveUploadStart', token: 'admin', postId: 'p-1', files: [] })), { ...env, ARCHIVE_BRIDGE_SECRET: 'bridge', ARCHIVE_UPLOADS: kv });
+      const result = await response.json();
+      assert.equal(result.ok, true);
+      assert.equal('sessionUrl' in result.uploads[0], false);
+      assert.equal(JSON.parse(values.get('upload:f-1')).sessionUrl.includes('secret'), true);
+      assert.equal(forwarded.bridgeSecret, 'bridge');
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
+  await t.test('validates session and forwards only an 8 MiB maximum file chunk', async () => {
+    const values = new Map([['upload:f-1', JSON.stringify({ uploadId: 'f-1', token: 'admin', sessionUrl: 'https://www.googleapis.com/upload/drive/v3/files?upload_id=secret', extension: 'txt', mimeType: 'text/plain', totalSize: 4, fileSize: 4, offset: 0 })]]);
+    const kv = { get: async key => values.get(key) || null, put: async (key, value) => values.set(key, value), delete: async key => values.delete(key) };
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      if (calls === 1) return new Response(JSON.stringify({ ok: true, user: { role: 'admin' } }));
+      if (calls === 2) return new Response('', { status: 308 });
+      return new Response('', { status: 308, headers: { Range: 'bytes=0-3' } });
+    };
+    try {
+      const chunkRequest = new Request('https://worker.example/archive/chunk', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/octet-stream', 'X-Upload-Id': 'f-1', 'X-Session-Token': 'admin', 'X-Chunk-Start': '0' }, body: 'test' });
+      const response = await worker.fetch(chunkRequest, { ...env, ARCHIVE_BRIDGE_SECRET: 'bridge', ARCHIVE_UPLOADS: kv });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { ok: true, received: 4, total: 4, done: false });
+      assert.equal(calls, 3);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+});

@@ -1,5 +1,20 @@
 # Google Apps Script API
 
+## 자료실 Google Drive 설정
+
+자료실 파일은 **현재 Apps Script 웹 앱 배포 계정** 소유의 비공개 Drive 폴더에 저장합니다. 파일 본문은 8 MiB 단위로 Cloudflare Worker에서 Google Drive resumable upload로 전달하며, 다운로드는 로그인 세션을 확인한 Worker가 Drive에서 스트리밍합니다. 브라우저에는 장기 OAuth 토큰을 보내지 않습니다.
+
+1. Apps Script 편집기에서 **프로젝트 설정 → `appsscript.json` 매니페스트 파일 표시**를 켭니다.
+2. 이 폴더의 `appsscript.json`에 있는 OAuth scope를 Apps Script 프로젝트 매니페스트에 반영합니다. 기존 매니페스트가 있다면 기존 설정을 보존하면서 `oauthScopes` 3개를 추가합니다.
+3. Apps Script를 저장하고, `Code.gs`와 매니페스트 변경으로 새 배포 버전을 만듭니다. 배포 계정이 Drive 접근 권한을 요청하면 승인합니다.
+4. 연결된 Google Cloud 프로젝트에서 **Google Drive API**를 활성화합니다.
+5. Apps Script **프로젝트 설정 → 스크립트 속성**에 `ARCHIVE_BRIDGE_SECRET`을 등록합니다. 충분히 길고 임의인 값(최소 32자)을 사용합니다. 같은 값을 Cloudflare Worker Secret에도 등록합니다. 그 값은 코드나 채팅에 넣지 않습니다.
+6. Worker 폴더에서 `npx wrangler kv namespace create ARCHIVE_UPLOADS`를 실행합니다. 반환된 Namespace ID를 `cloudflare-worker/wrangler.toml`의 KV binding 설정에 넣고 주석을 해제합니다.
+7. Worker 폴더에서 `npx wrangler secret put ARCHIVE_BRIDGE_SECRET`을 실행하고 Apps Script 스크립트 속성과 동일한 값을 입력합니다.
+8. 기존 Apps Script URL과 허용 Origin 설정은 유지하고 `npx wrangler deploy`로 Worker를 재배포합니다. KV는 업로드 세션 URI와 5분 만료 다운로드 티켓을 저장하며, Google access token은 보관하지 않습니다.
+
+Drive 업로드 세션은 서버가 만들고 Worker가 KV에 보관합니다. 앱 관리자가 선택한 파일은 브라우저에서 8 MiB 조각으로 Worker에 보내며, Worker가 각 조각을 Google Drive로 전달합니다. 비동영상 업로드 합계는 200,000,000 bytes, 동영상 업로드 합계는 500,000,000 bytes입니다. 게시글과 첨부 메타데이터는 `archive_posts`, `archive_files` 시트에 저장됩니다.
+
 1. 스프레드시트에서 **확장 프로그램 → Apps Script**를 열고 `Code.gs`를 붙여 넣습니다.
 2. 프로젝트 설정 → 스크립트 속성에 아래 값을 등록합니다.
    - `SPREADSHEET_ID`: 데이터 스프레드시트 ID

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowDown, ArrowUp, ArrowUpDown, BarChart3, CalendarDays, Check, Download, GraduationCap, LayoutDashboard, LogOut, Menu, Plus, RefreshCw, Save, Settings, Trash2, Users, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Archive, BarChart3, CalendarDays, Check, Download, GraduationCap, LayoutDashboard, LogOut, Menu, Plus, RefreshCw, Save, Settings, Trash2, Users, X } from 'lucide-react';
 import { EMPLOYMENT_CATEGORIES, getEmploymentSummary } from './employment.js';
 import SchedulePage from './SchedulePage.jsx';
 import CurrentStudentsPage from './CurrentStudentsPage.jsx';
@@ -9,6 +9,7 @@ import { getStudentStatusColor } from './studentStatus.js';
 import { filterStudentRows, sortStudentRows } from './studentTableUtils.js';
 import { formatTransferDetailForDisplay } from './dateFormat.js';
 import LoginScreen from './LoginScreen.jsx';
+import ArchivePage from './ArchivePage.jsx';
 import './styles.css';
 import './counseling.css';
 import './loading.css';
@@ -26,6 +27,7 @@ const NAV = [
   { id: 'currentStudents', label: '재학생관리', icon: Users, admin: true },
   { id: 'analytics', label: '통계 및 분석', icon: BarChart3 },
   { id: 'schedule', label: '일정', icon: CalendarDays },
+  { id: 'archive', label: '자료실', icon: Archive },
   { id: 'settings', label: '시스템 설정', icon: Settings, admin: true },
 ];
 const SESSION_KEY = 'alumni-management.session';
@@ -275,6 +277,7 @@ function App() {
       {page === 'students' && <StudentsCounseling student={selected} records={counselings} loading={loading} loadState={counselingsLoad} onRetry={() => run(() => loadCounselings(selected?.studentId, year))} page={counselingPage} setPage={setCounselingPage} detail={counselingDetail} setDetail={setCounselingDetail} draft={counselingDraft} setDraft={setCounselingDraft} onSave={saveCounseling} onDelete={deleteCounseling}/>}
       {page === 'analytics' && <section className="panel"><div className="panel-title"><h2>졸업 연도별 통계</h2><button className="sync" onClick={() => loadPageData('analytics')} disabled={analyticsLoad.status === 'loading'}><RefreshCw size={15}/> 새로고침</button></div>{analyticsLoad.status !== 'loaded' ? <DataState state={analyticsLoad} onRetry={() => loadPageData('analytics')}/> : analytics.length ? <div className="analytics-list">{analytics.map(item => <div className="analytics-year" key={item.year}><h3>{item.year} <small>{item.total}명</small></h3><StatusBars counts={item.counts} total={item.total}/></div>)}</div> : <div className="empty-detail">등록된 데이터가 없습니다.</div>}</section>}
       {page === 'schedule' && <SchedulePage auth={auth}/>}
+      {page === 'archive' && <ArchivePage auth={auth} api={api} isAdmin={isAdmin} setMessage={setMessage}/>}
       {page === 'settings' && isAdmin && <section className="panel table-panel"><div className="panel-title"><h2>사용자 계정 관리</h2><button className="primary-button" onClick={() => setUserDraft({ userId: '', name: '', email: '', role: 'user', active: true })}><Plus size={16}/> 사용자 추가</button></div>{userDraft && <div className="form-grid user-form"><Field label="아이디 *" value={userDraft.userId} disabled={users.some(u => u.userId === userDraft.userId)} onChange={v => setUserDraft({ ...userDraft, userId: v })}/><Field label="이름 *" value={userDraft.name} onChange={v => setUserDraft({ ...userDraft, name: v })}/><Field label="Google 이메일" value={userDraft.email} onChange={v => setUserDraft({ ...userDraft, email: v })}/><Field label="역할" value={userDraft.role} options={[{ value: 'user', label: '일반 사용자' }, { value: 'admin', label: '관리자' }]} onChange={v => setUserDraft({ ...userDraft, role: v })}/><label className="field"><span>사용 상태</span><select value={String(userDraft.active)} onChange={e => setUserDraft({ ...userDraft, active: e.target.value === 'true' })}><option value="true">활성</option><option value="false">비활성</option></select></label><div className="form-actions"><button className="sync" onClick={() => setUserDraft(null)}>취소</button><button className="save" onClick={saveUser} disabled={loading || !userDraft.userId?.trim() || !userDraft.name?.trim()}><Save size={17}/> 계정 저장</button></div></div>}{usersLoad.status !== 'loaded' ? <DataState state={usersLoad} onRetry={() => loadPageData('settings')}/> : <div className="table-wrap"><table><thead><tr><th>아이디</th><th>이름</th><th>이메일</th><th>역할</th><th>상태</th><th>관리</th></tr></thead><tbody>{users.map(user => <tr key={user.userId}><td>{user.userId}</td><td>{user.name}</td><td>{user.email || '-'}</td><td>{user.role === 'admin' ? '관리자' : '일반 사용자'}</td><td>{user.active ? '활성' : '비활성'}</td><td><button className="view" onClick={() => setUserDraft({ ...user })}>수정</button></td></tr>)}</tbody></table>{!users.length && <DataState state={usersLoad} empty emptyMessage="등록된 데이터가 없습니다."/>}</div>}</section>}
       <p className="notice" role="status">{message}</p></main><footer>컴퓨터소프트웨어공학과 학사 행정 시스템 <span>GitHub Pages + Google Apps Script</span></footer></div></div>;
 }
