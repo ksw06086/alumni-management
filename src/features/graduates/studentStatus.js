@@ -1,3 +1,5 @@
+export const STUDENT_STATUSES = ['취업자', '진학자', '미취업자', '군입대자', '기타'];
+
 export const STUDENT_STATUS_COLORS = {
   '취업자': { foreground: '#167044', background: '#eaf7ef', accent: '#24945d' },
   '진학자': { foreground: '#2459a6', background: '#edf4ff', accent: '#3975d4' },

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { filterStudentRows, sortStudentRows } from '../src/studentTableUtils.js';
-import { STUDENT_STATUS_COLORS, getStudentStatusColor } from '../src/studentStatus.js';
+import { filterStudentRows, sortStudentRows } from '../src/features/graduates/studentTableUtils.js';
+import { STUDENT_STATUS_COLORS, getStudentStatusColor } from '../src/features/graduates/studentStatus.js';
 
 test('student table sorting uses numeric and Korean order, keeps blanks last, and does not mutate input', () => {
   const rows = [

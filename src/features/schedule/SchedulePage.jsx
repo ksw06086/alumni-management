@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { CalendarDays, ChevronLeft, ChevronRight, MapPin, MoreHorizontal, Pencil, Plus, Repeat2, Search, Trash2, X } from 'lucide-react';
 import { buildDateEventMap, buildWeekEventSegments, calendarGridDates, dateKey } from './schedules.js';
+import { formatKoreanDate, formatKoreanDateTime } from '../../shared/dateFormat.js';
 
 const API_URL = import.meta.env.VITE_API_BASE_URL || '';
 const DAY_NAMES = ['일', '월', '화', '수', '목', '금', '토'];
@@ -50,9 +51,7 @@ function currentSeoulMonth() { const { year, month } = seoulDateParts(); return 
 function timeValue(datetime) { return String(datetime || '').slice(11, 16); }
 function seoulDatetime(date, time, allDay) { return `${date}T${allDay ? '00:00' : time}:00+09:00`; }
 function formatDate(date) {
-  const [year, month, day] = date.split('-').map(Number);
-  const dayName = DAY_NAMES[new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
-  return `${year}.${String(month).padStart(2, '0')}.${String(day).padStart(2, '0')} (${dayName})`;
+  return formatKoreanDate(date);
 }
 function monthLabel(date) { return new Intl.DateTimeFormat('ko-KR', { year: 'numeric', month: 'long', timeZone: 'Asia/Seoul' }).format(new Date(Date.UTC(date.getFullYear(), date.getMonth(), 15, 12))); }
 function safeColor(value) { return /^#[\da-f]{6}$/i.test(String(value || '')) ? value : DEFAULT_CATEGORY_COLOR; }
@@ -70,7 +69,7 @@ function monthOccurrences(dateMap, year, month) {
   return [...unique.values()].sort((a, b) => a.occurrence_start_date.localeCompare(b.occurrence_start_date) || a.start_datetime.localeCompare(b.start_datetime));
 }
 
-export default function SchedulePage({ auth }) {
+export default function SchedulePage({ auth, notify }) {
   // 화면 상태(선택 월, 필터, 모달)와 서버 원본(categories/schedules)을 분리해 관리합니다.
   const [month, setMonth] = useState(currentSeoulMonth);
   const [categories, setCategories] = useState([]);
@@ -85,7 +84,6 @@ export default function SchedulePage({ auth }) {
   const [editor, setEditor] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
   const gridDates = useMemo(() => calendarGridDates(month), [month]);
   const rangeStart = dateKey(gridDates[0]);
   const rangeEnd = dateKey(gridDates[gridDates.length - 1]);
@@ -180,8 +178,8 @@ export default function SchedulePage({ auth }) {
         repeat_type: value.repeat_type, repeat_interval: value.repeat_type === 'none' ? 1 : Number(value.repeat_interval || 1),
         repeat_until: value.repeat_type === 'none' ? '' : value.repeat_until,
       } });
-      await loadSchedules(); setEditor(null); setDetail(null); setNotice(value.schedule_id ? '일정을 수정했습니다.' : '일정을 등록했습니다.');
-    } catch (reason) { setError(reason.message); }
+      await loadSchedules(); setEditor(null); setDetail(null); notify(value.schedule_id ? '일정을 수정했습니다.' : '일정을 등록했습니다.', 'success');
+    } catch (reason) { notify(reason.message, 'error'); }
     finally { setBusy(false); }
   };
   // 삭제는 확인 대화상자 뒤 서버에 요청하고, 성공하면 현재 달력 데이터를 다시 불러옵니다.
@@ -190,8 +188,8 @@ export default function SchedulePage({ auth }) {
     setBusy(true); setError('');
     try {
       await send('deleteSchedule', auth.token, { schedule_id: schedule.schedule_id });
-      await loadSchedules(); setDetail(null); setNotice('일정을 삭제했습니다.');
-    } catch (reason) { setError(reason.message); }
+      await loadSchedules(); setDetail(null); notify('일정을 삭제했습니다.', 'success');
+    } catch (reason) { notify(reason.message, 'error'); }
     finally { setBusy(false); }
   };
   const toggleCategory = id => setHiddenCategoryIds(current => current.includes(id) ? current.filter(value => value !== id) : [...current, id]);
@@ -240,7 +238,7 @@ export default function SchedulePage({ auth }) {
         return <button className="agenda-event" key={eventKey(event)} onClick={() => setDetail({ ...event, _category: category })}><i style={{ backgroundColor: safeColor(category?.color_hex) }}/><span className="agenda-date">{event.occurrence_start_date === event.occurrence_end_date ? formatDate(event.occurrence_start_date) : `${formatDate(event.occurrence_start_date)} – ${formatDate(event.occurrence_end_date)}`}</span><span className="agenda-time">{event.all_day ? '종일' : `${timeValue(event.start_datetime)}–${timeValue(event.end_datetime)}`}</span><b>{event.title}</b><small>{category?.category_name || '기타'}</small></button>;
       })}</div> : <div className="schedule-empty">{search ? '검색 조건에 맞는 일정이 없습니다.' : focusedDate ? '선택한 날짜에 일정이 없습니다.' : '등록된 데이터가 없습니다.'}</div>}
     </section>
-    {(error || notice) && <p className={`schedule-message ${error ? 'error' : ''}`} role="status">{error || notice}</p>}
+    {error && <p className="schedule-message error" role="alert">{error}</p>}
     {busy && <div className="schedule-loading" role="status">일정을 불러오거나 저장하고 있습니다…</div>}
     {editor && <ScheduleEditor value={editor} categories={categories.filter(category => category.is_active || category.category_id === editor.category_id)} busy={busy} onChange={setEditor} onClose={() => { setEditor(null); setError(''); }} onSave={save}/>}
     {detail && <ScheduleDetail schedule={detail} category={detail._category || categoriesById[detail.category_id]} onClose={() => setDetail(null)} onEdit={() => openEdit(detail)} onDelete={() => remove(detail)}/>}
@@ -285,6 +283,6 @@ function ScheduleDetail({ schedule, category, onClose, onEdit, onDelete }) {
   return <div className="schedule-overlay schedule-detail-overlay" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="schedule-detail-modal" role="dialog" aria-modal="true" aria-labelledby="schedule-detail-title"><header><div className="schedule-detail-actions"><button aria-label="일정 수정" title="수정" onClick={onEdit}><Pencil size={18}/></button><button aria-label="일정 삭제" title="삭제" onClick={onDelete}><Trash2 size={18}/></button><button aria-label="닫기" title="닫기" onClick={onClose}><X size={19}/></button></div></header><div className="schedule-detail-content"><div className="detail-category"><i style={{ backgroundColor: safeColor(category?.color_hex) }}/>{category?.category_name || '기타'}</div><h2 id="schedule-detail-title">{schedule.title}</h2><p className="detail-datetime">{startDate === endDate ? formatDate(startDate) : `${formatDate(startDate)} – ${formatDate(endDate)}`}<br/>{schedule.all_day ? '종일' : `${timeValue(schedule.start_datetime)} – ${timeValue(schedule.end_datetime)}`}</p>
       {schedule.repeat_type !== 'none' && <><p className="detail-row"><Repeat2 size={16}/>{schedule.repeat_interval > 1 ? `${schedule.repeat_interval}${repeatUnit}마다` : repeatLabels[schedule.repeat_type]}{schedule.repeat_until ? ` · ${formatDate(schedule.repeat_until)}까지` : ' · 종료일 없음'}</p><p className="schedule-repeat-note">반복 일정의 수정·삭제는 전체 반복 규칙에 적용됩니다.</p></>}
       {schedule.location && <p className="detail-row"><MapPin size={16}/>{schedule.location}</p>}{schedule.description && <p className="detail-description">{schedule.description}</p>}
-      <div className="detail-author"><span className="author-avatar">{String(schedule.user_name || '?').slice(0, 1)}</span><div><b>{schedule.user_name || '사용자'}</b><small>등록 {schedule.created_at || '-'}</small>{schedule.updated_at && schedule.updated_at !== schedule.created_at && <small>수정 {schedule.updated_at}</small>}</div></div>
+      <div className="detail-author"><span className="author-avatar">{String(schedule.user_name || '?').slice(0, 1)}</span><div><b>{schedule.user_name || '사용자'}</b><small>등록 {formatKoreanDateTime(schedule.created_at) || '-'}</small>{schedule.updated_at && schedule.updated_at !== schedule.created_at && <small>수정 {formatKoreanDateTime(schedule.updated_at)}</small>}</div></div>
     </div></section></div>;
 }

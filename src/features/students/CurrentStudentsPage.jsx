@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { GraduationCap, Plus, RefreshCw, Save, X } from 'lucide-react';
-import StudentListHeader from './StudentListHeader.jsx';
+import StudentListHeader from '../../components/StudentListHeader.jsx';
+import { formatKoreanDateTime, hasStoredTime, toDateInputValue } from '../../shared/dateFormat.js';
 
 const EMPTY = { student_id: '', name: '', birth_date: '', gender: '', phone: '', email: '', affiliation: '', enrollment_status: '', notes: '', created_at: '', updated_at: '' };
 const PAGE_SIZE = 5;
@@ -39,9 +40,6 @@ export default function CurrentStudentsPage({ auth, api, run, loading, setMessag
       try {
         result = await api('transferCurrentStudent', { token: auth.token, studentId: selected.student_id });
       } catch (error) {
-        const message = error.message || '졸업생 전환에 실패했습니다.';
-        setMessage(message);
-        window.alert(message);
         throw error;
       }
       const year = result.graduationYear;
@@ -51,8 +49,10 @@ export default function CurrentStudentsPage({ auth, api, run, loading, setMessag
     }).finally(() => setTransferInProgress(false));
   };
   const saveCounseling = () => run(async () => {
-    const date = String(counselDraft.counseledAt || '').slice(0, 10);
-    await api('saveCurrentCounseling', { token: auth.token, studentId: selected.student_id, counseling: { ...counselDraft, counseledAt: `${date}T00:00` } });
+    const date = toDateInputValue(counselDraft.counseledAt);
+    const originalDate = counselDraft.originalCounseledAt;
+    const storedValue = counselDraft.counselingId && toDateInputValue(originalDate) === date && hasStoredTime(originalDate) ? originalDate : date;
+    await api('saveCurrentCounseling', { token: auth.token, studentId: selected.student_id, counseling: { ...counselDraft, counseledAt: storedValue } });
     setCounselDraft(null); await loadRecords(selected.student_id); setMessage('상담 기록을 저장했습니다.');
   });
   const deleteCounseling = () => {
@@ -69,12 +69,12 @@ export default function CurrentStudentsPage({ auth, api, run, loading, setMessag
       </section>
       <section className="panel current-student-detail"><div className="panel-title"><h2>{selected ? '재학생 정보 수정' : draft ? '재학생 등록' : '재학생 정보'}</h2></div>
         {draft ? <div className="form-grid current-student-form">{field('student_id','학번 / 학생 ID *')}{field('name','이름 *')}{field('birth_date','생년월일','date')}{field('gender','성별')}{field('phone','연락처','tel')}{field('email','이메일','email')}{field('affiliation','소속')}{field('enrollment_status','재학 상태')}{field('notes','기타 참고사항','textarea',true)}<div className="form-actions"><button className="sync" onClick={() => { setDraft(null); setSelected(null); }}>취소</button><button className="save" disabled={loading || !draft.student_id?.trim() || !draft.name?.trim()} onClick={save}><Save size={16}/> 저장</button>{selected && <button className="outline-button transfer-button" disabled={loading || transferInProgress || !selected.student_id?.trim()} onClick={transferStudent}><GraduationCap size={16}/>{transferInProgress ? '전환 처리 중…' : '졸업생 전환'}</button>}</div></div> : <div className="empty-detail">왼쪽 명단에서 학생을 선택하세요.</div>}
-        <section className="panel current-counselings"><div className="panel-title"><h2>상담 이력 {selected && <small>총 {records.length}건</small>}</h2>{selected && <button className="primary-button" onClick={() => setCounselDraft({ counseledAt: new Date().toISOString().slice(0,10), content: '' })}><Plus size={15}/> 상담 등록</button>}</div>
-          {!selected ? <div className="empty-detail">재학생을 선택하면 상담 이력이 표시됩니다.</div> : recordsLoad === 'loading' ? <div className="empty-detail" role="status">상담 이력을 불러오는 중입니다...</div> : recordsLoad === 'error' ? <div className="empty-detail" role="alert">상담 이력을 불러오지 못했습니다. <button className="outline-button" onClick={() => loadRecords(selected.student_id)}>다시 시도</button></div> : !records.length ? <div className="empty-detail">등록된 상담 이력이 없습니다.</div> : <div className="student-counseling-list">{shown.map(record => <button className="student-counseling-row" key={record.counselingId} onClick={() => setDetail(record)}><time>{String(record.counseledAt).slice(0,10)}</time><span>{record.content}</span><small>{record.authorName}</small></button>)}</div>}
+        <section className="panel current-counselings"><div className="panel-title"><h2>상담 이력 {selected && <small>총 {records.length}건</small>}</h2>{selected && <button className="primary-button" onClick={() => setCounselDraft({ counseledAt: toDateInputValue(new Date()), content: '' })}><Plus size={15}/> 상담 등록</button>}</div>
+          {!selected ? <div className="empty-detail">재학생을 선택하면 상담 이력이 표시됩니다.</div> : recordsLoad === 'loading' ? <div className="empty-detail" role="status">상담 이력을 불러오는 중입니다...</div> : recordsLoad === 'error' ? <div className="empty-detail" role="alert">상담 이력을 불러오지 못했습니다. <button className="outline-button" onClick={() => loadRecords(selected.student_id)}>다시 시도</button></div> : !records.length ? <div className="empty-detail">등록된 상담 이력이 없습니다.</div> : <div className="student-counseling-list">{shown.map(record => <button className="student-counseling-row" key={record.counselingId} onClick={() => setDetail(record)}><time>{formatKoreanDateTime(record.counseledAt)}</time><span>{record.content}</span><small>{record.authorName}</small></button>)}</div>}
           {pageCount > 1 && <nav className="counseling-pagination" aria-label="상담 이력 페이지"><button disabled={page <= 1} onClick={() => setPage(page - 1)}>이전</button>{Array.from({length:pageCount},(_,i)=><button key={i} className={page===i+1?'active':''} onClick={()=>setPage(i+1)}>{i+1}</button>)}<button disabled={page >= pageCount} onClick={() => setPage(page + 1)}>다음</button></nav>}
         </section>
       </section>
     </div>
-    {(counselDraft || detail) && <div className="counseling-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) { setDetail(null); setCounselDraft(null); } }}><section className="counseling-modal" role="dialog" aria-modal="true"><header><h2>{detail ? '상담 내용' : counselDraft.counselingId ? '상담 기록 수정' : '상담 등록'}</h2><button className="icon-button" onClick={() => { setDetail(null); setCounselDraft(null); }}><X size={18}/></button></header><div className="counseling-modal-body">{detail ? <><p>{String(detail.counseledAt).slice(0,10)} · {detail.authorName}</p><div className="counseling-full-content">{detail.content}</div></> : <><label className="field"><span>상담 날짜 *</span><input type="date" value={counselDraft.counseledAt} onChange={e => setCounselDraft({...counselDraft,counseledAt:e.target.value})}/></label><label className="field"><span>상담 내용 *</span><textarea rows="7" value={counselDraft.content} onChange={e => setCounselDraft({...counselDraft,content:e.target.value})}/></label></>}</div><footer>{detail && <><button className="danger-text-button" onClick={deleteCounseling}>삭제</button><button className="sync" onClick={() => { setCounselDraft({ counselingId: detail.counselingId, counseledAt: String(detail.counseledAt).slice(0,10), content: detail.content }); setDetail(null); }}>수정</button></>}<button className="sync" onClick={() => {setDetail(null);setCounselDraft(null);}}>닫기</button>{counselDraft && <button className="primary-button" onClick={saveCounseling} disabled={loading || !counselDraft.content.trim() || !counselDraft.counseledAt}><Save size={15}/> 저장</button>}</footer></section></div>}
+    {(counselDraft || detail) && <div className="counseling-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) { setDetail(null); setCounselDraft(null); } }}><section className="counseling-modal" role="dialog" aria-modal="true"><header><h2>{detail ? '상담 내용' : counselDraft.counselingId ? '상담 기록 수정' : '상담 등록'}</h2><button className="icon-button" onClick={() => { setDetail(null); setCounselDraft(null); }}><X size={18}/></button></header><div className="counseling-modal-body">{detail ? <><p>{formatKoreanDateTime(detail.counseledAt)} · {detail.authorName}</p><div className="counseling-full-content">{detail.content}</div></> : <><label className="field"><span>상담 날짜 *</span><input type="date" value={toDateInputValue(counselDraft.counseledAt)} onChange={e => setCounselDraft({...counselDraft,counseledAt:e.target.value})}/></label><label className="field"><span>상담 내용 *</span><textarea rows="7" value={counselDraft.content} onChange={e => setCounselDraft({...counselDraft,content:e.target.value})}/></label></>}</div><footer>{detail && <><button className="danger-text-button" onClick={deleteCounseling}>삭제</button><button className="sync" onClick={() => { setCounselDraft({ counselingId: detail.counselingId, originalCounseledAt: detail.counseledAt, counseledAt: toDateInputValue(detail.counseledAt), content: detail.content }); setDetail(null); }}>수정</button></>}<button className="sync" onClick={() => {setDetail(null);setCounselDraft(null);}}>닫기</button>{counselDraft && <button className="primary-button" onClick={saveCounseling} disabled={loading || !counselDraft.content.trim() || !counselDraft.counseledAt}><Save size={15}/> 저장</button>}</footer></section></div>}
   </div>;
 }

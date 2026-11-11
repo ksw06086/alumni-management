@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getEmploymentSummary } from '../src/employment.js';
+import { getEmploymentSummary } from '../src/features/dashboard/employment.js';
 
 test('employment summary counts known categories and excludes further study and military service', () => {
   const result = getEmploymentSummary([

@@ -12,6 +12,9 @@
 - 대시보드 취업 현황 원형 그래프와 연도별 취업률 집계
 - 연도별 학생 수 통계 및 CSV 내보내기
 - 관리자 전용 계정 관리와 기존 감사 로그 보존
+- Google Drive 기반 자료실과 첨부파일 업로드·다운로드
+- 한국천문연구원 특일 API를 통한 월별 공휴일 조회
+- 한국 시간대 날짜 표시와 화면 Toast 알림
 - 세션 만료, 로그아웃 시 토큰 폐기, 역할 및 입력값 검증
 - 같은 탭 새로고침 시 세션 복원 (탭을 닫으면 브라우저 세션 저장소가 정리됨)
 - 모바일 반응형 화면
@@ -20,7 +23,7 @@
 
 1. `.env.example`을 `.env.local`로 복사한 다음 `VITE_GOOGLE_CLIENT_ID`와 `VITE_API_BASE_URL`을 채웁니다.
 2. `.env.local`의 Google OAuth Client ID와 `apps-script`의 `GOOGLE_CLIENT_ID` 스크립트 속성에 같은 값을 사용합니다.
-3. `npm install` 후 `npm run dev`로 실행합니다.
+3. Node.js 20.19 이상에서 `npm install` 후 `npm run dev`로 실행합니다.
 
 앱은 Google Sheets를 브라우저에서 직접 호출하지 않습니다. 스프레드시트 ID는 Apps Script의 `SPREADSHEET_ID` 스크립트 속성에만 설정합니다.
 
@@ -86,3 +89,25 @@ Apps Script 캐시 기반 세션은 최대 6시간 유지되며 활동 중 연�
 ## 자동 테스트
 
 `npm test`는 Apps Script와 Cloudflare Worker 동작을 모의 환경에서 검증합니다. Google 계정 및 실제 배포 연결은 테스트용 스프레드시트와 Worker로 수동 확인해야 합니다. `npm run build`로 Pages용 빌드도 확인할 수 있습니다.
+
+## 코드 구조
+
+```text
+src/
+  main.jsx                 앱 초기화, 세션, 화면 전환
+  components/              기능 간 공유 UI
+  services/                공통 API 통신
+  features/
+    archive/               자료실
+    auth/                  로그인 화면
+    dashboard/             대시보드 집계
+    graduates/             졸업생 상태·검색·정렬
+    schedule/              일정 및 달력 계산
+    students/              재학생 관리
+  shared/                  공통 날짜 처리
+apps-script/               Apps Script 전역 진입 코드와 설정
+cloudflare-worker/         Worker 진입 코드와 Wrangler 설정
+test/                      node:test 테스트 모음
+```
+
+Apps Script `Code.gs`와 Cloudflare Worker의 `src/index.js`는 각각 별도 플랫폼의 배포 진입 파일입니다. API 형식과 시트 구조를 유지하기 위해 이 실행 경계는 그대로 둡니다. 빌드 명령은 `npm run build`이며 GitHub Actions는 Node.js 20 환경에서 빌드 후 GitHub Pages에 배포합니다.

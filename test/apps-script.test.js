@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { formatKoreanDateTime } from '../src/shared/dateFormat.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -52,8 +53,26 @@ function makeHarness() {
       return bytes(crypto.createHmac('sha256', keyBuffer).update(valueBuffer).digest());
     },
     getUuid: () => crypto.randomUUID(),
-    formatDate: (value, _timezone, pattern) => pattern === 'yyyy' ? currentYear : value.toISOString().replace('T', ' ').slice(0, 19),
-    parseDate: value => new Date(`${value.replace(' ', 'T')}Z`),
+    formatDate: (value, timezone, pattern) => {
+      if (pattern === 'yyyy') return currentYear;
+      const date = new Date(value);
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+        timeZone: timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+      }).formatToParts(date).map(part => [part.type, part.value]));
+      const weekday = new Intl.DateTimeFormat('en-US', { timeZone: timezone || 'UTC', weekday: 'short' }).format(date);
+      const isoWeekday = ({ Mon: '1', Tue: '2', Wed: '3', Thu: '4', Fri: '5', Sat: '6', Sun: '7' })[weekday];
+      return pattern.replace('yyyy', parts.year).replace('MM', parts.month).replace('dd', parts.day)
+        .replace('HH', parts.hour).replace('mm', parts.minute).replace('ss', parts.second).replace('u', isoWeekday);
+    },
+    parseDate: (value, timezone = 'UTC') => {
+      const text = String(value).replaceAll('.', '-').replace(' ', 'T');
+      if (/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?)?$/.test(text)) {
+        const local = text.length === 10 ? `${text}T00:00:00` : text.length === 16 ? `${text}:00` : text;
+        return new Date(`${local}${timezone === 'Asia/Seoul' ? '+09:00' : 'Z'}`);
+      }
+      return new Date(text.endsWith('Z') ? text : `${text}Z`);
+    },
   };
   const context = vm.createContext({
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => ({ SPREADSHEET_ID: 'test-sheet', GOOGLE_CLIENT_ID: 'test-client' })[key] || null }) },
@@ -180,9 +199,9 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     const graduate = app.call({ action: 'students', token: adminToken, year: '2026' }).students.find(student => student.studentId === 'C001');
     assert.equal(graduate.status, '미취업자');
     assert.match(graduate.detail, /이메일: current@example\.com/);
-    assert.match(graduate.detail, /생년월일: 2004년 01월 02일/);
-    assert.match(graduate.detail, /재학생 최초 등록일: 2026년 10월 07일 \(수\) 오전 11시 08분 05초/);
-    assert.match(graduate.detail, /재학생 졸업 전환일: \d{4}년 \d{2}월 \d{2}일 \([월화수목금토일]\) (오전|오후) \d{2}시 \d{2}분 \d{2}초/);
+    assert.match(graduate.detail, /생년월일: 2004\.01\.02\(금\)/);
+    assert.match(graduate.detail, /재학생 최초 등록일: 2026\.10\.07\(수\) 11:08:05/);
+    assert.match(graduate.detail, /재학생 졸업 전환일: \d{4}\.\d{2}\.\d{2}\([월화수목금토일]\) \d{2}:\d{2}:\d{2}/);
     assert.doesNotMatch(graduate.detail, /재학생 최종 수정일/);
     assert.equal(currentCounselings.rows[1][1], '2026');
     assert.equal(app.call({ action: 'counselings', token: adminToken, year: '2026', studentId: 'C001' }).counselings[0].content, '상담 기록 보존 확인');
@@ -199,9 +218,7 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     assert.equal(app.call({ action: 'currentStudents', token: adminToken }).students.some(student => student.student_id === 'C002'), true, 'source row survives an append failure');
     assert.equal(app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C002', graduationYear: '2026', status: '취업자' }).ok, true, 'the rolled back transfer can be retried');
     const retriedDetail = app.call({ action: 'students', token: adminToken, year: '2026' }).students.find(student => student.studentId === 'C002').detail;
-    const retryParts = Object.fromEntries(new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).formatToParts(new Date(firstAttemptTime)).map(part => [part.type, part.value]));
-    const retryPeriod = /^AM$/i.test(retryParts.dayPeriod || '') ? '오전' : /^PM$/i.test(retryParts.dayPeriod || '') ? '오후' : retryParts.dayPeriod;
-    const expectedDate = `재학생 졸업 전환일: ${retryParts.year}년 ${retryParts.month}월 ${retryParts.day}일 (${retryParts.weekday}) ${retryPeriod} ${retryParts.hour}시 ${retryParts.minute}분 ${retryParts.second}초`;
+    const expectedDate = `재학생 졸업 전환일: ${formatKoreanDateTime(firstAttemptTime)}`;
     assert.ok(retriedDetail.includes(expectedDate), 'retry preserves the timestamp first written to the transfer ledger');
 
     assert.equal(app.call({ action: 'saveCurrentStudent', token: adminToken, create: true, student: { student_id: 'C003', name: 'Duplicate Student' } }).ok, true);

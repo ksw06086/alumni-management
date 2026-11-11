@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDateEventMap, calendarGridDates, dateKey, expandScheduleInstances } from '../src/schedules.js';
+import { buildDateEventMap, calendarGridDates, dateKey, expandScheduleInstances } from '../src/features/schedule/schedules.js';
 
 const event = overrides => ({
   schedule_id: 'event-1', title: '테스트', start_datetime: '2026-10-05T09:00:00+09:00', end_datetime: '2026-10-05T10:00:00+09:00',

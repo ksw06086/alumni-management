@@ -18,18 +18,17 @@
 .design-shell main:has(.detail-panel) {
   display: grid;
   grid-template-columns: minmax(280px, .9fr) minmax(0, 1.1fr);
-  grid-template-areas: "filters filters" "list detail" "list counsel";
+  grid-template-areas: "filters filters" "list detail";
   align-content: start;
+  row-gap: 18px;
   column-gap: 18px;
 }
 .design-shell main:has(.detail-panel) > .filters { grid-area: filters; }
 .design-shell main:has(.detail-panel) > .stats { display: none; }
-.design-shell main:has(.detail-panel) > .table-panel { grid-area: list; min-width: 0; align-self: start; }
-.design-shell main:has(.detail-panel) > .detail-panel { grid-area: detail; min-width: 0; align-self: start; }
-.design-shell main:has(.detail-panel) > .student-counseling-panel { grid-area: counsel; min-width: 0; align-self: start; }
-.design-shell main:has(.detail-panel) > .detail-panel { margin-bottom: 0; }
-.design-shell main:has(.detail-panel) > .student-counseling-panel { margin-top: 2px; }
-.design-shell main:has(.detail-panel) > .notice { grid-column: 1 / -1; }
+.design-shell main:has(.detail-panel) > .table-panel { grid-area: list; min-width: 0; align-self: start; margin: 0 !important; }
+.student-detail-column { grid-area: detail; display: grid; align-content: start; gap: 18px; min-width: 0; align-self: start; }
+.student-detail-column > .detail-panel,
+.student-detail-column > .student-counseling-panel { min-width: 0; margin: 0; }
 .student-counseling-panel .panel-title { justify-content: space-between; padding: 16px 20px; }
 .student-counseling-panel .panel-title h2 { font-size: 19px; }
 .student-counseling-panel .panel-title h2 small { font-size: 13px; }
@@ -63,7 +62,7 @@
 .counseling-modal-body .field textarea { min-height: 150px; resize: vertical; }
 .danger-text-button { margin-right: auto; border: 0; background: transparent; color: #b54343; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 @media (max-width: 900px) {
-  .design-shell main:has(.detail-panel) { grid-template-columns: minmax(0, 1fr); grid-template-areas: "filters" "list" "detail" "counsel"; }
+  .design-shell main:has(.detail-panel) { grid-template-columns: minmax(0, 1fr); grid-template-areas: "filters" "list" "detail"; }
   .student-counseling-row { grid-template-columns: minmax(0, 1fr) auto; }
   .student-counseling-row span { grid-column: 1; grid-row: 2; }
   .student-counseling-row small { grid-column: 2; grid-row: 1 / span 2; }

@@ -1,5 +1,5 @@
 apps-script
-cloudflare-worker
+cloudflare-worker/**
 node_modules
 docs
 request_img
@@ -9,9 +9,5 @@ member_management_project.pdf
 .env.local
 .dev.vars
 .DS_Store
-!apps-script/
-!apps-script/**
-!cloudflare-worker/
-!cloudflare-worker/**
 !docs/
 !docs/**

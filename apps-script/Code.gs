@@ -288,25 +288,53 @@ function formatPreservedDate_(value, dateOnly, sourceTimeZone) {
     date.setUTCHours(0, 0, 0, 0);
     date.setUTCFullYear(year, month - 1, day);
     if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return text;
-    return `${dateParts[1]}년 ${dateParts[2]}월 ${dateParts[3]}일`;
+    return formatKoreanDateObject_(new Date(Date.UTC(year, month - 1, day, 12)), true);
+  }
+  const displayDate = /^(\d{4})\.(\d{2})\.(\d{2})\(([월화수목금토일])\)(?: (\d{2}):(\d{2}):(\d{2}))?$/.exec(text);
+  if (displayDate) {
+    const [, year, month, day, , hour, minute, second] = displayDate;
+    if (!isValidCalendarDate_(Number(year), Number(month), Number(day)) || (hour && (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59))) return text;
+    if (!hour) return formatPreservedDate_(`${year}-${month}-${day}`, true, sourceTimeZone);
+    try { return formatKoreanDateObject_(Utilities.parseDate(`${year}-${month}-${day} ${hour}:${minute}:${second}`, 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss'), dateOnly); }
+    catch (_) { return text; }
   }
   const isoDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})$/i;
-  const englishDateTime = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT[+-]\d{4}(?:\s+\(.+\))?$/i;
+  const localDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
+  const englishDateTime = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT[+-]\d{4}(?:\s+\([^)]*\))?$/i;
   const scriptDateTime = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text);
-  if (!isoDateTime.test(text) && !englishDateTime.test(text) && !scriptDateTime) return text;
+  if (!isoDateTime.test(text) && !localDateTime.test(text) && !englishDateTime.test(text) && !scriptDateTime) return text;
+  const localParts = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(text);
+  if (localParts && (!isValidCalendarDate_(Number(localParts[1]), Number(localParts[2]), Number(localParts[3])) || Number(localParts[4]) > 23 || Number(localParts[5]) > 59 || Number(localParts[6] || 0) > 59)) return text;
   let date;
-  try { date = scriptDateTime ? Utilities.parseDate(text, sourceTimeZone || Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : new Date(text); }
+  try {
+    if (scriptDateTime) date = Utilities.parseDate(text, sourceTimeZone || 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss');
+    else if (localDateTime.test(text)) date = Utilities.parseDate(text, 'Asia/Seoul', text.length === 16 ? "yyyy-MM-dd'T'HH:mm" : "yyyy-MM-dd'T'HH:mm:ss");
+    else date = new Date(text.replace(/\s+\([^)]*\)$/, ''));
+  }
   catch (_) { return text; }
   if (isNaN(date.getTime())) return text;
   return formatKoreanDateObject_(date, dateOnly);
 }
+function isValidCalendarDate_(year, month, day) {
+  const date = new Date(0);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCFullYear(year, month - 1, day);
+  return month >= 1 && month <= 12 && day >= 1 && day <= 31 && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
 function formatKoreanDateObject_(date, dateOnly) {
-  const options = { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' };
-  if (!dateOnly) Object.assign(options, { weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('ko-KR', options).formatToParts(date).map(part => [part.type, part.value]));
-  const formattedDate = `${parts.year}년 ${parts.month}월 ${parts.day}일`;
-  const period = /^AM$/i.test(parts.dayPeriod || '') ? '오전' : /^PM$/i.test(parts.dayPeriod || '') ? '오후' : parts.dayPeriod;
-  return dateOnly ? formattedDate : `${formattedDate} (${parts.weekday}) ${period} ${parts.hour}시 ${parts.minute}분 ${parts.second}초`;
+  const formattedDate = Utilities.formatDate(date, 'Asia/Seoul', 'yyyy.MM.dd');
+  const weekdayNumber = Number(Utilities.formatDate(date, 'Asia/Seoul', 'u')) % 7;
+  const weekday = ['일', '월', '화', '수', '목', '금', '토'][weekdayNumber];
+  return dateOnly ? `${formattedDate}(${weekday})` : `${formattedDate}(${weekday}) ${Utilities.formatDate(date, 'Asia/Seoul', 'HH:mm:ss')}`;
+}
+function counselingDateSortValue_(value) {
+  const formatted = formatPreservedDate_(value, false, 'Asia/Seoul');
+  const match = /^(\d{4})\.(\d{2})\.(\d{2})\([월화수목금토일]\)(?: (\d{2}:\d{2}:\d{2}))?$/.exec(formatted);
+  if (!match) return 0;
+  try {
+    const source = match[4] ? `${match[1]}.${match[2]}.${match[3]} ${match[4]}` : `${match[1]}.${match[2]}.${match[3]}`;
+    return Utilities.parseDate(source, 'Asia/Seoul', match[4] ? 'yyyy.MM.dd HH:mm:ss' : 'yyyy.MM.dd').getTime();
+  } catch (_) { return 0; }
 }
 function saveCurrentStudent_(session, request) {
   const input = request.student || {};
@@ -545,7 +573,7 @@ function readCounselings_(year, studentId) {
   findStudent_(targetYear, targetStudentId);
   return getOrCreateSheet_(COUNSELINGS_SHEET, COUNSELING_HEADERS).getDataRange().getValues().slice(1).filter(row => row.some(Boolean) && String(row[1]) === targetYear && String(row[2]) === targetStudentId)
     .map(row => Object.fromEntries(COUNSELING_HEADERS.map((header, i) => [header, row[i] == null ? '' : String(row[i])])) )
-    .sort((a, b) => b.counseledAt.localeCompare(a.counseledAt) || b.createdAt.localeCompare(a.createdAt));
+    .sort((a, b) => counselingDateSortValue_(b.counseledAt) - counselingDateSortValue_(a.counseledAt) || b.createdAt.localeCompare(a.createdAt));
 }
 function saveCounseling_(session, request) {
   const year = String(request.year || '').trim();
@@ -554,7 +582,8 @@ function saveCounseling_(session, request) {
   const counselingId = String(input.counselingId || '').trim();
   const counseledAt = String(input.counseledAt || '').trim();
   const content = String(input.content || '').trim();
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(counseledAt)) throw new Error('상담 일시를 입력하세요.');
+  const storedCounseledAt = formatPreservedDate_(counseledAt, false, 'Asia/Seoul');
+  if (!/^\d{4}\.\d{2}\.\d{2}\([월화수목금토일]\)(?: \d{2}:\d{2}:\d{2})?$/.test(storedCounseledAt)) throw new Error('상담 날짜를 올바르게 입력하세요.');
   if (!content) throw new Error('상담 내용을 입력하세요.');
   const student = findStudent_(year, studentId);
   const sheet = getOrCreateSheet_(COUNSELINGS_SHEET, COUNSELING_HEADERS);
@@ -563,7 +592,7 @@ function saveCounseling_(session, request) {
   if (counselingId && index < 0) throw new Error('수정할 상담 기록을 찾을 수 없습니다.');
   const now = nowSeoul_();
   const existing = index >= 0 ? values[index + 1] : null;
-  const record = [existing ? String(existing[0]) : Utilities.getUuid(), year, studentId, student.name, counseledAt, content, existing ? String(existing[6]) : session.userId, existing ? String(existing[7]) : session.name, existing ? String(existing[8]) : now, now];
+  const record = [existing ? String(existing[0]) : Utilities.getUuid(), year, studentId, student.name, storedCounseledAt, content, existing ? String(existing[6]) : session.userId, existing ? String(existing[7]) : session.name, existing ? String(existing[8]) : now, now];
   if (existing) sheet.getRange(index + 2, 1, 1, COUNSELING_HEADERS.length).setValues([record]); else sheet.appendRow(record);
   appendLog_(session, existing ? '상담 기록 수정' : '상담 기록 등록', year, studentId, student.name, existing ? '학생 상담 내용 수정' : '학생 상담 내용 등록');
   return { ok: true, counseling: Object.fromEntries(COUNSELING_HEADERS.map((header, i) => [header, record[i]])) };

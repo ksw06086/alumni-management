@@ -1,25 +1,27 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowDown, ArrowUp, ArrowUpDown, Archive, BarChart3, CalendarDays, Check, Download, GraduationCap, LayoutDashboard, LogOut, Menu, Plus, RefreshCw, Save, Settings, Trash2, Users, X } from 'lucide-react';
-import { EMPLOYMENT_CATEGORIES, getEmploymentSummary } from './employment.js';
-import SchedulePage from './SchedulePage.jsx';
-import CurrentStudentsPage from './CurrentStudentsPage.jsx';
-import StudentListHeader from './StudentListHeader.jsx';
-import { getStudentStatusColor } from './studentStatus.js';
-import { filterStudentRows, sortStudentRows } from './studentTableUtils.js';
-import { formatTransferDetailForDisplay } from './dateFormat.js';
-import LoginScreen from './LoginScreen.jsx';
-import ArchivePage from './ArchivePage.jsx';
+import { Archive, BarChart3, CalendarDays, Download, GraduationCap, LayoutDashboard, LogOut, Menu, Plus, RefreshCw, Save, Settings, Users, X } from 'lucide-react';
+import SchedulePage from './features/schedule/SchedulePage.jsx';
+import CurrentStudentsPage from './features/students/CurrentStudentsPage.jsx';
+import StudentListHeader from './components/StudentListHeader.jsx';
+import { DataState, Field } from './components/FormControls.jsx';
+import { STUDENT_STATUSES } from './features/graduates/studentStatus.js';
+import { EmploymentOverview, StatusBars, StatusFilter, StudentStats, StudentTable } from './features/dashboard/DashboardComponents.jsx';
+import { filterStudentRows } from './features/graduates/studentTableUtils.js';
+import { formatKoreanDateTime, formatTransferDetailForDisplay, hasStoredTime, toDateInputValue } from './shared/dateFormat.js';
+import { api } from './services/api.js';
+import ToastViewport from './components/ToastViewport.jsx';
+import LoginScreen from './features/auth/LoginScreen.jsx';
+import ArchivePage from './features/archive/ArchivePage.jsx';
 import './styles.css';
 import './counseling.css';
 import './loading.css';
 import './current-students.css';
 import './student-ui.css';
+import './toast.css';
 
 // 배포 환경별 값은 Vite 빌드 시 주입됩니다. 브라우저는 Worker URL만 호출합니다.
-const API_URL = import.meta.env.VITE_API_BASE_URL || '';
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
-const STATUSES = ['취업자', '진학자', '미취업자', '군입대자', '기타'];
 const EMPTY_STUDENT = { graduationYear: '', studentId: '', name: '', gender: '', phone: '', address: '', status: '미취업자', company: '', field: '', detail: '', gpa: '' };
 const NAV = [
   { id: 'dashboard', label: '대시보드', icon: LayoutDashboard },
@@ -32,40 +34,12 @@ const NAV = [
 ];
 const SESSION_KEY = 'alumni-management.session';
 
-function formatKoreanDateTime(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value || '';
-  return new Intl.DateTimeFormat('ko-KR', {
-    timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric',
-    weekday: 'short', hour: 'numeric', minute: '2-digit', hourCycle: 'h23',
-  }).format(date);
-}
-
-function formatKoreanDate(value) {
-  const datePart = String(value || '').slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return value || '';
-  const date = new Date(`${datePart}T00:00:00+09:00`);
-  return new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric' }).format(date);
-}
-
 // 로그인 세션은 현재 탭을 새로고침해도 유지되도록 sessionStorage에 저장합니다.
 function readSavedSession() {
   try {
     const saved = JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null');
     return saved?.auth?.token ? saved : null;
   } catch (_) { return null; }
-}
-
-// 모든 화면의 API 호출 경계입니다. 서버 오류 형식을 사용자용 예외로 통일합니다.
-async function api(action, payload = {}) {
-  if (!API_URL) throw new Error('VITE_API_BASE_URL이 설정되지 않았습니다. 배포 설정을 확인하세요.');
-  let response;
-  try { response = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, ...payload }) }); }
-  catch (_) { throw new Error('서버에 연결할 수 없습니다. 네트워크와 API 설정을 확인하세요.'); }
-  let result;
-  try { result = await response.json(); } catch (_) { throw new Error(`서버 응답을 읽을 수 없습니다. (HTTP ${response.status})`); }
-  if (!response.ok || !result.ok) throw new Error(result.error || `요청에 실패했습니다. (HTTP ${response.status})`);
-  return result;
 }
 
 function App() {
@@ -87,14 +61,25 @@ function App() {
   const [counselingsLoad, setCounselingsLoad] = useState({ status: 'idle', error: '' });
   const [analyticsLoad, setAnalyticsLoad] = useState({ status: 'idle', error: '' });
   const [usersLoad, setUsersLoad] = useState({ status: 'idle', error: '' });
-  const [message, setMessage] = useState(''), [loading, setLoading] = useState(false), [refreshingSheets, setRefreshingSheets] = useState(false), [userDraft, setUserDraft] = useState(null);
+  const [message, setMessageState] = useState(''), [toasts, setToasts] = useState([]), [loading, setLoading] = useState(false), [refreshingSheets, setRefreshingSheets] = useState(false), [userDraft, setUserDraft] = useState(null);
+  const dismissToast = useCallback(id => setToasts(current => current.filter(item => item.id !== id)), []);
+  const setMessage = useCallback((value, requestedType) => {
+    const text = String(value || '');
+    setMessageState(text);
+    if (!text) { setToasts([]); return; }
+    const type = requestedType || (/실패|오류|불러오지|연결할 수 없|권한|만료|찾을 수 없|잘못|완료되지 않|저장되지/.test(text)
+      ? 'error'
+      : /입력|선택|초과|허용되지|취소|중복|확인하세요|필요합니다/.test(text) ? 'warning' : 'success');
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setToasts(current => [...current.slice(-3), { id, message: text, type }]);
+  }, []);
 
   // 공통 로딩·오류 처리기입니다. API 작업 후 상단 알림과 버튼 상태를 갱신합니다.
   const run = async (work, successMessage = '') => {
     setLoading(true);
     try { const result = await work(); if (successMessage) setMessage(successMessage); return result; }
     catch (error) {
-      setMessage(error.message);
+      setMessage(error.message, 'error');
       if (error.message.includes('로그인이 만료') || error.message.includes('계정이 비활성화')) setAuth(null);
       return null;
     }
@@ -223,11 +208,11 @@ function App() {
   });
   // 상담 요청은 연도와 학생 ID를 함께 보내 서버에서 학생별로 분리합니다.
   const saveCounseling = () => run(async () => {
-    const date = String(counselingDraft?.counseledAt || '').slice(0, 10);
+    const date = toDateInputValue(counselingDraft?.counseledAt);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('상담 날짜를 입력하세요.');
-    const previousDateTime = String(counselingDraft?.originalCounseledAt || '');
-    const preservedTime = counselingDraft?.counselingId && previousDateTime.slice(0, 10) === date && /^\d{2}:\d{2}$/.test(previousDateTime.slice(11, 16)) ? previousDateTime.slice(11, 16) : '00:00';
-    await api('saveCounseling', { token: auth.token, year, studentId: counselingStudentId, counseling: { ...counselingDraft, originalCounseledAt: undefined, counseledAt: `${date}T${preservedTime}` } });
+    const originalDate = counselingDraft?.originalCounseledAt;
+    const storedValue = counselingDraft?.counselingId && toDateInputValue(originalDate) === date && hasStoredTime(originalDate) ? originalDate : date;
+    await api('saveCounseling', { token: auth.token, year, studentId: counselingStudentId, counseling: { ...counselingDraft, originalCounseledAt: undefined, counseledAt: storedValue } });
     setCounselingDraft(null); setCounselingPage(1); await loadCounselings(counselingStudentId); setMessage('상담 기록을 저장했습니다.');
   });
   const deleteCounseling = record => {
@@ -251,7 +236,7 @@ function App() {
   const exportCsv = () => {
     const columns = [['studentId', '학번'], ['name', '이름'], ['gender', '성별'], ['phone', '전화번호'], ['address', '주소'], ['status', '상태'], ['company', '취업/진학처'], ['field', '관심분야'], ['detail', '상세정보'], ['gpa', '평점'], ['updatedAt', '수정일']];
     const quote = value => { const text = String(value ?? ''); const safe = /^[\s]*[=+@-]/.test(text) ? `'${text}` : text; return `"${safe.replaceAll('"', '""')}"`; };
-    const content = '\uFEFF' + [columns.map(([, label]) => quote(label)).join(','), ...filtered.map(row => columns.map(([key]) => quote(row[key])).join(','))].join('\r\n');
+    const content = '\uFEFF' + [columns.map(([, label]) => quote(label)).join(','), ...filtered.map(row => columns.map(([key]) => quote(key === 'updatedAt' ? formatKoreanDateTime(row[key]) : row[key])).join(','))].join('\r\n');
     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' })); link.download = `졸업생_${year || '목록'}.csv`; link.click(); URL.revokeObjectURL(link.href);
   };
   const saveUser = () => run(async () => {
@@ -271,74 +256,35 @@ function App() {
       {['dashboard', 'students'].includes(page) && <><section className="filters year-sheet-toolbar"><label><span>연도별 시트</span><select value={year} onFocus={() => refreshSheetList(false)} onChange={e => changeYear(e.target.value)}><option value="">시트를 선택하세요</option>{sheets.map(s => <option key={s} value={s}>{s}</option>)}</select></label><div className="year-sheet-actions"><button className="outline-button year-refresh" onClick={() => refreshSheetList(true)} disabled={refreshingSheets} title="연도 시트 목록 새로고침"><RefreshCw size={15} className={refreshingSheets ? 'spin' : ''}/> 연도 목록 새로고침</button>{sheetsLoad.status === 'error' && <button className="outline-button year-sheet-retry" onClick={() => refreshSheetList(true)}>다시 시도</button>}<button className="sync" onClick={() => retryStudents()} disabled={studentsLoad.status === 'loading' || !year}><RefreshCw size={15}/> Sheets 동기화</button></div></section>
         {page === 'dashboard' && <EmploymentOverview students={students} year={year} loadState={studentsLoad} onRetry={retryStudents}/>}<StudentStats students={students} year={year} loadState={studentsLoad} onRetry={retryStudents} onSelectStatus={openStudentsForStatus}/>
         {page === 'dashboard' && <><section className="panel"><div className="panel-title"><h2>현황 요약</h2><span>{year || '연도'} 기준 상태별 인원</span></div><StatusBars students={students} loadState={studentsLoad} onRetry={retryStudents}/></section><section className="panel"><div className="panel-title"><h2>최근 졸업생</h2><button className="text-button" onClick={() => navigate('students')}>명단 보기 →</button></div><StudentTable rows={students} rowLimit={8} selected={selected} onSelect={s => { counselingFetchSequence.current += 1; setCounselings([]); setCounselingStudentId(s.studentId); setCounselingsLoad({ status: 'loading', error: '' }); setCounselingPage(1); setCounselingDetail(null); setCounselingDraft(null); setSelected(s); setDraft({ ...s }); navigate('students'); }} onCounsel={startCounselingFor} onDelete={removeStudent} isAdmin={isAdmin} loadState={studentsLoad} onRetry={retryStudents} emptyMessage="등록된 졸업생이 없습니다."/></section></>}
-        {page === 'students' && <><section className="panel detail-panel"><div className="panel-title"><h2>{draft ? (draft.studentId ? '졸업생 정보 수정' : '졸업생 등록') : '졸업생 정보'}</h2></div>{studentsLoad.status !== 'loaded' ? <div className="student-detail-data-state"><DataState state={studentsLoad} onRetry={() => run(() => loadStudents(auth.token, year))}/></div> : draft ? <div className="form-grid"><Field label="학번 *" value={draft.studentId} disabled={!!selected} onChange={v => setDraft({ ...draft, studentId: v })}/><Field label="이름 *" value={draft.name} onChange={v => setDraft({ ...draft, name: v })}/><Field label="성별" value={draft.gender} onChange={v => setDraft({ ...draft, gender: v })}/><Field label="전화번호" value={draft.phone} onChange={v => setDraft({ ...draft, phone: v })}/><Field label="상태" value={draft.status} options={STATUSES} onChange={v => setDraft({ ...draft, status: v })}/><Field label="취업/진학처" value={draft.company} onChange={v => setDraft({ ...draft, company: v })}/><Field label="관심분야" value={draft.field} onChange={v => setDraft({ ...draft, field: v })}/><Field label="평점평균" value={draft.gpa} onChange={v => setDraft({ ...draft, gpa: v })}/><Field label="주소" value={draft.address} onChange={v => setDraft({ ...draft, address: v })} wide/><Field label="상세정보" value={formatTransferDetailForDisplay(draft.detail)} onChange={v => setDraft({ ...draft, detail: v })} textarea wide/><div className="form-actions"><button className="sync" onClick={() => { setDraft(null); setSelected(null); }}>취소</button><button className="save" onClick={saveStudent} disabled={loading || !draft.name?.trim() || !draft.studentId?.trim()}><Save size={17}/> 저장</button></div></div> : <div className="empty-detail">명단에서 학생을 선택하거나 새 학생을 등록하세요.</div>}</section>
+        {page === 'students' && <><div className="student-detail-column"><section className="panel detail-panel"><div className="panel-title"><h2>{draft ? (draft.studentId ? '졸업생 정보 수정' : '졸업생 등록') : '졸업생 정보'}</h2></div>{studentsLoad.status !== 'loaded' ? <div className="student-detail-data-state"><DataState state={studentsLoad} onRetry={() => run(() => loadStudents(auth.token, year))}/></div> : draft ? <div className="form-grid"><Field label="학번 *" value={draft.studentId} disabled={!!selected} onChange={v => setDraft({ ...draft, studentId: v })}/><Field label="이름 *" value={draft.name} onChange={v => setDraft({ ...draft, name: v })}/><Field label="성별" value={draft.gender} onChange={v => setDraft({ ...draft, gender: v })}/><Field label="전화번호" value={draft.phone} onChange={v => setDraft({ ...draft, phone: v })}/><Field label="상태" value={draft.status} options={STUDENT_STATUSES} onChange={v => setDraft({ ...draft, status: v })}/><Field label="취업/진학처" value={draft.company} onChange={v => setDraft({ ...draft, company: v })}/><Field label="관심분야" value={draft.field} onChange={v => setDraft({ ...draft, field: v })}/><Field label="평점평균" value={draft.gpa} onChange={v => setDraft({ ...draft, gpa: v })}/><Field label="주소" value={draft.address} onChange={v => setDraft({ ...draft, address: v })} wide/><Field label="상세정보" value={formatTransferDetailForDisplay(draft.detail)} onChange={v => setDraft({ ...draft, detail: v })} textarea wide/><div className="form-actions"><button className="sync" onClick={() => { setDraft(null); setSelected(null); }}>취소</button><button className="save" onClick={saveStudent} disabled={loading || !draft.name?.trim() || !draft.studentId?.trim()}><Save size={17}/> 저장</button></div></div> : <div className="empty-detail">명단에서 학생을 선택하거나 새 학생을 등록하세요.</div>}</section>
+          <StudentsCounseling student={selected} records={counselings} loading={loading} loadState={counselingsLoad} onRetry={() => run(() => loadCounselings(selected?.studentId, year))} page={counselingPage} setPage={setCounselingPage} detail={counselingDetail} setDetail={setCounselingDetail} draft={counselingDraft} setDraft={setCounselingDraft} onSave={saveCounseling} onDelete={deleteCounseling}/></div>
           <section className="panel table-panel"><StudentListHeader title="졸업생 명단" count={filtered.length} query={query} onQueryChange={setQuery} placeholder="이름, 학번, 관심분야, 거주지 검색"><button className="outline-button student-list-button" onClick={exportCsv} disabled={!filtered.length}><Download size={15}/> CSV</button><button className="primary-button student-list-button" onClick={startNewStudent} disabled={!year}><Plus size={16}/> 학생 등록</button></StudentListHeader><StatusFilter value={status} onChange={setStatus}/>{studentsLoad.status === 'loaded' ? <StudentTable rows={filtered} selected={selected} onSelect={toggleStudentSelection} clickableRows onDelete={removeStudent} isAdmin={isAdmin} emptyMessage={students.length ? '검색 조건에 맞는 졸업생이 없습니다.' : '등록된 졸업생이 없습니다.'}/> : <div className="student-list-data-state"><DataState state={studentsLoad} onRetry={() => run(() => loadStudents(auth.token, year))}/></div>}</section></>}
       </>}
-      {page === 'students' && <StudentsCounseling student={selected} records={counselings} loading={loading} loadState={counselingsLoad} onRetry={() => run(() => loadCounselings(selected?.studentId, year))} page={counselingPage} setPage={setCounselingPage} detail={counselingDetail} setDetail={setCounselingDetail} draft={counselingDraft} setDraft={setCounselingDraft} onSave={saveCounseling} onDelete={deleteCounseling}/>}
       {page === 'analytics' && <section className="panel"><div className="panel-title"><h2>졸업 연도별 통계</h2><button className="sync" onClick={() => loadPageData('analytics')} disabled={analyticsLoad.status === 'loading'}><RefreshCw size={15}/> 새로고침</button></div>{analyticsLoad.status !== 'loaded' ? <DataState state={analyticsLoad} onRetry={() => loadPageData('analytics')}/> : analytics.length ? <div className="analytics-list">{analytics.map(item => <div className="analytics-year" key={item.year}><h3>{item.year} <small>{item.total}명</small></h3><StatusBars counts={item.counts} total={item.total}/></div>)}</div> : <div className="empty-detail">등록된 데이터가 없습니다.</div>}</section>}
-      {page === 'schedule' && <SchedulePage auth={auth}/>}
+      {page === 'schedule' && <SchedulePage auth={auth} notify={setMessage}/>}
       {page === 'archive' && <ArchivePage auth={auth} api={api} isAdmin={isAdmin} setMessage={setMessage}/>}
       {page === 'settings' && isAdmin && <section className="panel table-panel"><div className="panel-title"><h2>사용자 계정 관리</h2><button className="primary-button" onClick={() => setUserDraft({ userId: '', name: '', email: '', role: 'user', active: true })}><Plus size={16}/> 사용자 추가</button></div>{userDraft && <div className="form-grid user-form"><Field label="아이디 *" value={userDraft.userId} disabled={users.some(u => u.userId === userDraft.userId)} onChange={v => setUserDraft({ ...userDraft, userId: v })}/><Field label="이름 *" value={userDraft.name} onChange={v => setUserDraft({ ...userDraft, name: v })}/><Field label="Google 이메일" value={userDraft.email} onChange={v => setUserDraft({ ...userDraft, email: v })}/><Field label="역할" value={userDraft.role} options={[{ value: 'user', label: '일반 사용자' }, { value: 'admin', label: '관리자' }]} onChange={v => setUserDraft({ ...userDraft, role: v })}/><label className="field"><span>사용 상태</span><select value={String(userDraft.active)} onChange={e => setUserDraft({ ...userDraft, active: e.target.value === 'true' })}><option value="true">활성</option><option value="false">비활성</option></select></label><div className="form-actions"><button className="sync" onClick={() => setUserDraft(null)}>취소</button><button className="save" onClick={saveUser} disabled={loading || !userDraft.userId?.trim() || !userDraft.name?.trim()}><Save size={17}/> 계정 저장</button></div></div>}{usersLoad.status !== 'loaded' ? <DataState state={usersLoad} onRetry={() => loadPageData('settings')}/> : <div className="table-wrap"><table><thead><tr><th>아이디</th><th>이름</th><th>이메일</th><th>역할</th><th>상태</th><th>관리</th></tr></thead><tbody>{users.map(user => <tr key={user.userId}><td>{user.userId}</td><td>{user.name}</td><td>{user.email || '-'}</td><td>{user.role === 'admin' ? '관리자' : '일반 사용자'}</td><td>{user.active ? '활성' : '비활성'}</td><td><button className="view" onClick={() => setUserDraft({ ...user })}>수정</button></td></tr>)}</tbody></table>{!users.length && <DataState state={usersLoad} empty emptyMessage="등록된 데이터가 없습니다."/>}</div>}</section>}
-      <p className="notice" role="status">{message}</p></main><footer>컴퓨터소프트웨어공학과 학사 행정 시스템 <span>GitHub Pages + Google Apps Script</span></footer></div></div>;
+      </main><footer>컴퓨터소프트웨어공학과 학사 행정 시스템 <span>GitHub Pages + Google Apps Script</span></footer><ToastViewport items={toasts} onDismiss={dismissToast}/></div></div>;
 }
 
 function StudentsCounseling({ student, records, loading, loadState, onRetry, page, setPage, detail, setDetail, draft, setDraft, onSave, onDelete }) {
   const pageSize = 5;
   const pageCount = Math.max(1, Math.ceil(records.length / pageSize));
   const visible = records.slice((page - 1) * pageSize, page * pageSize);
-  const openNew = () => setDraft({ counselingId: '', counseledAt: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10), content: '' });
+  const openNew = () => setDraft({ counselingId: '', counseledAt: toDateInputValue(new Date()), content: '' });
   const closeOnBackdrop = event => { if (event.target === event.currentTarget) { setDetail(null); setDraft(null); } };
   return <>
     <section className="panel student-counseling-panel">
       <div className="panel-title"><h2>상담 이력 <small>{records.length}건</small></h2><button className="primary-button" disabled={!student || loading} onClick={openNew}><Plus size={15}/> 상담 등록</button></div>
       {!student ? <div className="empty-detail">졸업생을 선택하면 상담 이력이 표시됩니다.</div> : loadState.status !== 'loaded' ? <div className="counseling-data-state"><DataState state={loadState} onRetry={onRetry}/></div> : records.length === 0 ? <div className="empty-detail">등록된 상담이력이 없습니다.</div> : <>
-        <div className="student-counseling-list">{visible.map(record => <button className="student-counseling-row" key={record.counselingId} onClick={() => setDetail(record)}><time>{formatKoreanDate(record.counseledAt)}</time><span>{record.content}</span><small>{record.authorName || ''}</small></button>)}</div>
+        <div className="student-counseling-list">{visible.map(record => <button className="student-counseling-row" key={record.counselingId} onClick={() => setDetail(record)}><time>{formatKoreanDateTime(record.counseledAt)}</time><span>{record.content}</span><small>{record.authorName || ''}</small></button>)}</div>
         {pageCount > 1 && <nav className="counseling-pagination" aria-label="상담 이력 페이지"><button disabled={page <= 1} onClick={() => setPage(page - 1)}>이전</button>{Array.from({ length: pageCount }, (_, index) => index + 1).map(number => <button key={number} className={number === page ? 'active' : ''} aria-current={number === page ? 'page' : undefined} onClick={() => setPage(number)}>{number}</button>)}<button disabled={page >= pageCount} onClick={() => setPage(page + 1)}>다음</button></nav>}
       </>}
     </section>
-    {detail && <div className="counseling-modal-backdrop" onMouseDown={closeOnBackdrop}><section className="counseling-modal" role="dialog" aria-modal="true" aria-labelledby="counseling-detail-title"><header><h2 id="counseling-detail-title">상담 내용</h2><button className="icon-button" aria-label="닫기" onClick={() => setDetail(null)}><X size={18}/></button></header><div className="counseling-modal-body"><dl><dt>상담일자</dt><dd>{formatKoreanDate(detail.counseledAt)}</dd>{detail.authorName && <><dt>작성자</dt><dd>{detail.authorName}</dd></>}</dl><div className="counseling-full-content">{detail.content}</div>{detail.createdAt && <small>작성 {formatKoreanDateTime(detail.createdAt)}{detail.updatedAt && detail.updatedAt !== detail.createdAt ? ` · 수정 ${formatKoreanDateTime(detail.updatedAt)}` : ''}</small>}</div><footer><button className="danger-text-button" onClick={() => { onDelete(detail); setDetail(null); }}>삭제</button><button className="sync" onClick={() => { setDraft({ ...detail, originalCounseledAt: detail.counseledAt, counseledAt: String(detail.counseledAt || '').slice(0, 10) }); setDetail(null); }}>수정</button><button className="primary-button" onClick={() => setDetail(null)}>닫기</button></footer></section></div>}
-    {draft && <div className="counseling-modal-backdrop" onMouseDown={closeOnBackdrop}><section className="counseling-modal" role="dialog" aria-modal="true" aria-labelledby="counseling-edit-title"><header><h2 id="counseling-edit-title">{draft.counselingId ? '상담 기록 수정' : '상담 기록 등록'}</h2><button className="icon-button" aria-label="닫기" onClick={() => setDraft(null)}><X size={18}/></button></header><div className="counseling-modal-body"><label className="field"><span>상담 날짜 *</span><input type="date" value={String(draft.counseledAt || '').slice(0, 10)} onChange={event => setDraft({ ...draft, counseledAt: event.target.value })}/></label><label className="field"><span>상담 내용 *</span><textarea rows="7" value={draft.content || ''} onChange={event => setDraft({ ...draft, content: event.target.value })} placeholder="상담 내용을 입력하세요."/></label></div><footer><button className="sync" onClick={() => setDraft(null)}>취소</button><button className="primary-button" disabled={loading || !draft.counseledAt || !draft.content?.trim()} onClick={() => onSave()}><Save size={15}/> 저장</button></footer></section></div>}
+    {detail && <div className="counseling-modal-backdrop" onMouseDown={closeOnBackdrop}><section className="counseling-modal" role="dialog" aria-modal="true" aria-labelledby="counseling-detail-title"><header><h2 id="counseling-detail-title">상담 내용</h2><button className="icon-button" aria-label="닫기" onClick={() => setDetail(null)}><X size={18}/></button></header><div className="counseling-modal-body"><dl><dt>상담일자</dt><dd>{formatKoreanDateTime(detail.counseledAt)}</dd>{detail.authorName && <><dt>작성자</dt><dd>{detail.authorName}</dd></>}</dl><div className="counseling-full-content">{detail.content}</div>{detail.createdAt && <small>작성 {formatKoreanDateTime(detail.createdAt)}{detail.updatedAt && detail.updatedAt !== detail.createdAt ? ` · 수정 ${formatKoreanDateTime(detail.updatedAt)}` : ''}</small>}</div><footer><button className="danger-text-button" onClick={() => { onDelete(detail); setDetail(null); }}>삭제</button><button className="sync" onClick={() => { setDraft({ ...detail, originalCounseledAt: detail.counseledAt, counseledAt: toDateInputValue(detail.counseledAt) }); setDetail(null); }}>수정</button><button className="primary-button" onClick={() => setDetail(null)}>닫기</button></footer></section></div>}
+    {draft && <div className="counseling-modal-backdrop" onMouseDown={closeOnBackdrop}><section className="counseling-modal" role="dialog" aria-modal="true" aria-labelledby="counseling-edit-title"><header><h2 id="counseling-edit-title">{draft.counselingId ? '상담 기록 수정' : '상담 기록 등록'}</h2><button className="icon-button" aria-label="닫기" onClick={() => setDraft(null)}><X size={18}/></button></header><div className="counseling-modal-body"><label className="field"><span>상담 날짜 *</span><input type="date" value={toDateInputValue(draft.counseledAt)} onChange={event => setDraft({ ...draft, counseledAt: event.target.value })}/></label><label className="field"><span>상담 내용 *</span><textarea rows="7" value={draft.content || ''} onChange={event => setDraft({ ...draft, content: event.target.value })} placeholder="상담 내용을 입력하세요."/></label></div><footer><button className="sync" onClick={() => setDraft(null)}>취소</button><button className="primary-button" disabled={loading || !draft.counseledAt || !draft.content?.trim()} onClick={() => onSave()}><Save size={15}/> 저장</button></footer></section></div>}
   </>;
 }
 
 
-function DataState({ state, onRetry, empty = false, emptyMessage = '등록된 데이터가 없습니다.' }) {
-  if (state?.status === 'loading' || state?.status === 'idle') return <div className="data-state" role="status" aria-live="polite"><span className="data-spinner" aria-hidden="true"/><span>데이터를 불러오는 중입니다...</span></div>;
-  if (state?.status === 'error') return <div className="data-state data-state-error" role="alert"><span>데이터를 불러오지 못했습니다. 다시 시도해 주세요.</span>{state.error && <small title={state.error}>{state.error}</small>}<button className="outline-button" onClick={onRetry}>다시 시도</button></div>;
-  if (empty) return <div className="data-state data-state-empty" role="status">{emptyMessage}</div>;
-  return null;
-}
-function StudentStats({ students, year, loadState, onRetry, onSelectStatus }) {
-  if (loadState.status !== 'loaded') return <section className="stats stats-loading"><DataState state={loadState} onRetry={onRetry}/></section>;
-  return <section className="stats"><button type="button" className="total-card status-count-card" onClick={() => onSelectStatus('전체학생')}><span>전체 학생</span><strong>{students.length}<small>명</small></strong><p>{year || '-'} 기준</p></button>{STATUSES.map(label => { const color = getStudentStatusColor(label); return <button type="button" className="stat-card status-count-card" style={{ '--status-accent': color.accent, '--status-bg': color.background, '--status-fg': color.foreground }} key={label} onClick={() => onSelectStatus(label)}><span>{label}</span><strong>{students.filter(s => s.status === label).length}<small>명</small></strong></button>; })}</section>;
-}
-function Field({ label, value, onChange, options, textarea, wide, disabled, type = 'text' }) { return <label className={`field ${wide ? 'wide' : ''}`}><span>{label}</span>{textarea ? <textarea value={value || ''} onChange={e => onChange(e.target.value)}/> : options ? <select value={value ?? ''} onChange={e => onChange(e.target.value)}>{options.map(o => typeof o === 'string' ? <option key={o}>{o}</option> : <option key={o.value} value={o.value}>{o.label}</option>)}</select> : <input type={type} disabled={disabled} value={value ?? ''} onChange={e => onChange(e.target.value)}/>}</label>; }
-function StatusFilter({ value, onChange }) { return <div className="status-filter">{['전체학생', ...STATUSES].map(label => <button key={label} className={value === label ? 'active' : ''} onClick={() => onChange(label)}>{label}</button>)}</div>; }
-function StudentTable({ rows, rowLimit, selected, onSelect, onCounsel, onDelete, isAdmin, clickableRows = false, loadState = { status: 'loaded' }, onRetry, emptyMessage = '표시할 데이터가 없습니다.' }) {
-  const [sort, setSort] = useState(null);
-  const columns = [{ key: 'studentId', label: '학번' }, { key: 'name', label: '이름' }, { key: 'gender', label: '성별' }, { key: 'gpa', label: '평점', numeric: true }, { key: 'status', label: '상태' }, { key: 'company', label: '취업/진학처' }, { key: 'field', label: '관심분야' }];
-  const sortedRows = useMemo(() => sortStudentRows(rows, sort && { ...sort, numeric: sort.key === 'gpa' }), [rows, sort]);
-  const displayedRows = rowLimit ? sortedRows.slice(0, rowLimit) : sortedRows;
-  const toggleSort = key => setSort(current => current?.key !== key ? { key, direction: 'asc' } : current.direction === 'asc' ? { key, direction: 'desc' } : null);
-  const sortHeader = ({ key, label }) => { const active = sort?.key === key; const Icon = active ? (sort.direction === 'asc' ? ArrowUp : ArrowDown) : ArrowUpDown; return <th key={key} aria-sort={active ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}><button type="button" className="sortable-header" onClick={() => toggleSort(key)}>{label}<Icon size={13}/></button></th>; };
-  if (loadState.status !== 'loaded') return <div className={`table-data-state ${clickableRows ? 'student-table-state' : ''}`}><DataState state={loadState} onRetry={onRetry}/></div>;
-  return <div className="table-wrap"><table><thead><tr><th>번호</th>{columns.map(sortHeader)}<th>관리</th></tr></thead><tbody>{displayedRows.map((s, i) => { const color = getStudentStatusColor(s.status); return <tr key={`${s.graduationYear}-${s.studentId}`} className={`${selected?.studentId === s.studentId ? 'selected ' : ''}${clickableRows ? 'clickable-row' : ''}`} onClick={clickableRows ? () => onSelect(s) : undefined} onKeyDown={clickableRows ? event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(s); } } : undefined} tabIndex={clickableRows ? 0 : undefined}><td>{i + 1}</td><td>{s.studentId}</td><td><b>{s.name}</b></td><td>{s.gender || '-'}</td><td>{s.gpa || '-'}</td><td><span className="tag" style={{ '--status-bg': color.background, '--status-fg': color.foreground, '--status-accent': color.accent }}>{s.status || '미지정'}</span></td><td>{s.company || '-'}</td><td>{s.field || '-'}</td><td><div className="row-actions">{!clickableRows && <button className="view" onClick={event => { event.stopPropagation(); onSelect(s); }}>{selected?.studentId === s.studentId ? <Check size={14}/> : null}조회</button>}{!clickableRows && onCounsel && <button className="view" onClick={event => { event.stopPropagation(); onCounsel(s); }} title="상담 이력">상담</button>}<button className="icon-button danger" aria-label={`${s.name} 삭제`} title="삭제" onClick={event => { event.stopPropagation(); onDelete(s); }}><Trash2 size={15}/></button></div></td></tr>; })}</tbody></table>{!displayedRows.length && <div className="empty-detail">{emptyMessage}</div>}</div>;
-}
-function EmploymentOverview({ students, year, loadState, onRetry }) {
-  if (loadState.status !== 'loaded') return <section className="panel employment-overview"><div className="panel-title"><h2>취업 현황</h2><span>{year || '연도'} 기준 · 학생 명단 상태값</span></div><DataState state={loadState} onRetry={onRetry}/></section>;
-  if (!students.length) return <section className="panel employment-overview"><div className="panel-title"><h2>취업 현황</h2><span>{year || '연도'} 기준 · 학생 명단 상태값</span></div><DataState state={loadState} empty emptyMessage="등록된 데이터가 없습니다."/></section>;
-  const { counts, total, excluded, eligible, employed, rate: rawRate } = getEmploymentSummary(students);
-  const rate = rawRate === null ? null : rawRate.toFixed(1);
-  let offset = 0;
-  const segments = counts.map(item => { const start = offset; const part = total ? item.count / total : 0; offset += part; return { ...item, start, part }; });
-  const gradient = total ? `conic-gradient(${segments.map(item => `${getStudentStatusColor(item.label).accent} ${item.start * 100}% ${(item.start + item.part) * 100}%`).join(',')})` : '#e9edf3';
-  return <section className="panel employment-overview"><div className="panel-title"><h2>취업 현황</h2><span>{year || '연도'} 기준 · 학생 명단 상태값</span></div><div className="employment-content"><div className="employment-chart-area"><div className="employment-donut" style={{ background: gradient }} aria-label={`전체 ${total}명 상태별 원형 그래프`}><div className="donut-hole"><b>{total}</b><span>전체 학생</span></div></div><div className="employment-legend">{counts.map(item => <div className="employment-legend-item" key={item.label}><i style={{ background: getStudentStatusColor(item.label).accent }}/><span>{item.label}</span><b>{item.count}명</b><small>{total ? (item.count / total * 100).toFixed(1) : '0.0'}%</small></div>)}</div></div><div className="employment-rate"><span>취업률</span><strong>{rate === null ? '산정 불가' : <>{rate}<small>%</small></>}</strong><p>취업자 <b>{employed}명</b> / 산정 대상 <b>{eligible}명</b></p><small>전체 {total}명 중 진학·군입대 {excluded}명 제외</small></div></div></section>;
-}
-function StatusBars({ students, counts, total, loadState, onRetry }) {
-  if (loadState && loadState.status !== 'loaded') return <DataState state={loadState} onRetry={onRetry}/>;
-  if (loadState && !counts && !students.length) return <DataState state={loadState} empty emptyMessage="등록된 데이터가 없습니다."/>;
-  const summary = counts || STATUSES.reduce((acc, label) => ({ ...acc, [label]: students.filter(s => s.status === label).length }), {});
-  const max = Math.max(total ?? students.length, 1);
-  return <div className="status-bars">{STATUSES.map(label => { const color = getStudentStatusColor(label); return <div className="status-bar-row" key={label} style={{ '--status-accent': color.accent, '--status-fg': color.foreground }}><span className="status-badge">{label}</span><div className="bar"><i style={{ width: `${Math.min(100, (summary[label] || 0) / max * 100)}%` }}/></div><b>{summary[label] || 0}명</b></div>; })}</div>;
-}
 createRoot(document.getElementById('root')).render(<App/>);

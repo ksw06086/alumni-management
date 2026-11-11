@@ -1,43 +1,69 @@
-# 프로젝트 기술 스택
+# 프로젝트 기술 스택 및 개발 구조
 
-## 개요
+## 기술 스택
 
-졸업생 관리 웹 앱은 React 프론트엔드와 Google Apps Script API를 사용합니다. 데이터는 Google Sheets에 저장하고, Cloudflare Worker가 브라우저와 Apps Script API 사이의 요청을 중계합니다. 프론트엔드는 GitHub Pages에 배포하도록 구성되어 있습니다.
-
-## 구성 요소
-
-| 영역 | 기술 | 용도 |
+| 영역 | 기술 | 역할 |
 | --- | --- | --- |
-| 프론트엔드 | React, JavaScript (ES modules) | 화면 구성과 사용자 상호작용 |
-| 빌드·개발 서버 | Vite | 로컬 개발 서버와 배포용 정적 파일 생성 |
-| 스타일 | CSS | 반응형 레이아웃과 화면 디자인 |
-| 아이콘 | Lucide React | 메뉴와 화면 아이콘 |
-| API·인증 | Google Apps Script (JavaScript) | 로그인, 권한 확인, 학생·상담·일정 API |
-| 데이터 저장 | Google Sheets | 사용자, 졸업생, 상담 이력, 일정 데이터 저장 |
-| API 프록시 | Cloudflare Workers | Apps Script 요청 중계와 CORS 정책 적용 |
-| 정적 호스팅 | GitHub Pages | 빌드된 프론트엔드 배포 |
-| 자동 배포 | GitHub Actions | 저장소 변경 시 빌드 후 GitHub Pages 배포 |
-| 테스트 | Node.js 내장 `node:test` | API, 프록시, 취업 통계, 달력 로직 검증 |
+| UI | React 19, JavaScript ES Modules | 화면 및 상호작용 |
+| 개발·빌드 | Vite 8 | 로컬 개발 서버와 정적 번들 생성 |
+| 스타일·아이콘 | 자체 CSS, Lucide React | 반응형 디자인과 아이콘 |
+| 업무 API | Google Apps Script V8 | 로그인, 권한 검증, Sheets·Drive 처리 |
+| 저장소 | Google Sheets, Google Drive | 학생·상담·일정·자료실 메타데이터 및 첨부파일 |
+| 프록시·업로드 상태 | Cloudflare Workers, KV | 브라우저 요청 중계, CORS, 자료실 업로드 상태 |
+| 웹 호스팅 | GitHub Pages | Vite 정적 빌드 배포 |
+| CI/CD | GitHub Actions | Node.js 20 빌드 및 Pages 배포 |
+| 테스트 | Node.js 내장 `node:test` | Apps Script/Worker 모의 테스트와 순수 로직 테스트 |
 
-## 주요 디렉터리
+## 코드 경계
 
-- `src/`: React 앱, 화면 스타일, 취업 통계 및 달력 로직
-- `apps-script/`: Google Apps Script API와 설정 안내
-- `cloudflare-worker/`: API 프록시 Worker
-- `test/`: 자동화 테스트
-- `.github/workflows/`: GitHub Pages 빌드·배포 워크플로
-
-## 자주 쓰는 명령
-
-```bash
-npm install       # 의존성 설치
-npm run dev       # 로컬 개발 서버 실행
-npm test          # 자동화 테스트 실행
-npm run build     # 배포용 파일을 dist/에 생성
-npm run preview   # 빌드 결과 미리보기
+```text
+src/
+  main.jsx
+  components/
+  services/                API 통신 경계
+  features/
+    archive/
+    auth/
+    dashboard/
+    graduates/
+    schedule/
+    students/
+  shared/
+apps-script/
+  Code.gs
+  appsscript.json
+cloudflare-worker/
+  src/index.js
+  wrangler.toml
+test/
+.github/workflows/
 ```
 
-## 설정 참고
+- `src/main.jsx`는 React 진입점, 인증/세션, 전역 데이터와 화면 분기를 담당합니다.
+- `src/features/`는 기능별 페이지와 해당 도메인 로직을 가까이 둡니다.
+- `src/components/`는 복수 기능에서 사용하는 UI 컴포넌트용입니다.
+- `src/shared/`는 날짜 포맷처럼 기능에 종속되지 않는 공통 유틸리티용입니다.
+- `apps-script/Code.gs`는 Apps Script 웹 앱의 `doGet`/`doPost` 실행 환경에서 동작하는 단일 전역 진입 파일입니다. 별도 번들 단계 없이 배포하므로 파일 이동이나 모듈 import를 임의로 적용하지 않습니다.
+- `cloudflare-worker/src/index.js`는 `wrangler.toml`이 지정하는 Worker 진입 파일입니다. 외부 요청·응답, CORS, KV, 업로드 흐름의 계약을 유지합니다.
 
-프론트엔드의 Google OAuth 클라이언트 ID와 API 주소는 Vite 환경변수로 전달합니다. 배포 워크플로에서는 GitHub Actions Secrets를 사용하도록 구성되어 있습니다. Apps Script의 스프레드시트 ID와 OAuth 클라이언트 ID는 Apps Script Script Properties에서 설정합니다. 실제 키와 비밀 값은 이 문서에 기록하지 않습니다.
+## 개발 및 검증
 
+Node.js 20.19 이상 또는 지원되는 최신 LTS를 권장합니다. Vite 8의 런타임 요구사항과 GitHub Actions의 Node.js 20 환경을 확인하세요.
+
+```bash
+npm install
+npm run dev
+npm test
+npm run build
+npm run preview
+```
+
+`npm test`는 `test/run.js`를 통해 기존 `node:test` 테스트 모음을 실행합니다. 빌드 명령은 `vite build --base=./`를 사용해 GitHub Pages 상대 경로 배포를 지원합니다.
+
+## 런타임 설정
+
+- 프런트엔드 빌드 변수: `VITE_GOOGLE_CLIENT_ID`, `VITE_API_BASE_URL`
+- Apps Script Script Properties: `SPREADSHEET_ID`, `GOOGLE_CLIENT_ID` 등 기존 서버 설정
+- Worker bindings/variables: `APPS_SCRIPT_URL`, `ALLOWED_ORIGINS`, `ARCHIVE_UPLOADS`
+
+실제 Secret 값은 저장소 문서나 프런트엔드 코드에 기록하지 않습니다. 시트 이름·헤더, API 요청/응답, 사용자 권한, OAuth scope, KV binding을 변경할 때는 양쪽 런타임과 배포 설정을 함께 검토해야 합니다.
