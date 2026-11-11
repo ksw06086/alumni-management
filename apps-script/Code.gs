@@ -187,16 +187,28 @@ function saveUser_(session, input) {
 }
 
 function listDataSheets_() {
-  return SpreadsheetApp.openById(SPREADSHEET_ID).getSheets().map(sheet => sheet.getName()).filter(name => ![USERS_SHEET, LOGS_SHEET, COUNSELINGS_SHEET, STUDENT_TRANSFERS_SHEET, SCHEDULES_SHEET, SCHEDULE_CATEGORIES_SHEET, CURRENT_STUDENTS_SHEET].includes(name));
+  return SpreadsheetApp.openById(SPREADSHEET_ID).getSheets().map(sheet => sheet.getName()).filter(name => /^\d{4}$/.test(name));
 }
 function getDataSheet_(year) {
   const target = String(year || '').trim();
   if (!target || listDataSheets_().indexOf(target) < 0) throw new Error('선택한 연도 시트를 찾을 수 없습니다.');
-  return getOrCreateSheet_(target, DATA_HEADERS);
+  return getGraduateSheetInfo_(target).sheet;
+}
+function getGraduateSheetInfo_(year, requiredHeaders) {
+  const target = String(year || '').trim();
+  if (!/^\d{4}$/.test(target)) throw new Error('졸업연도는 4자리 숫자여야 합니다.');
+  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(target);
+  if (!sheet) throw new Error(`${target}년 졸업생 시트가 없습니다. 시트를 먼저 만들고 다시 시도하세요. 새 시트는 자동 생성하지 않습니다.`);
+  const values = sheet.getDataRange().getValues();
+  const headers = (values[0] || []).map(value => String(value == null ? '' : value).trim());
+  const required = requiredHeaders || ['graduationYear', 'studentId', 'name', 'status'];
+  const missing = required.filter(header => headers.indexOf(header) < 0);
+  if (!headers.length || missing.length) throw new Error(`${target}년 시트의 필수 컬럼이 없습니다: ${missing.join(', ') || '헤더 행'}`);
+  return { sheet: sheet, headers: headers, values: values, indexes: Object.fromEntries(headers.map((header, index) => [header, index])) };
 }
 function readStudents_(year) {
-  const values = getDataSheet_(year).getDataRange().getValues();
-  return values.slice(1).filter(row => row.some(Boolean)).map(row => Object.fromEntries(DATA_HEADERS.map((h, i) => [h, row[i] == null ? '' : String(row[i])] )));
+  const info = getGraduateSheetInfo_(year);
+  return info.values.slice(1).filter(row => row.some(Boolean)).map(row => Object.fromEntries(DATA_HEADERS.map(header => [header, row[info.indexes[header]] == null ? '' : String(row[info.indexes[header]])] )));
 }
 
 // 재학생은 졸업생 연도 시트와 분리된 고정 시트를 이름 기반으로 매핑합니다.
@@ -249,14 +261,25 @@ function transferCurrentStudent_(session, request) {
     if (VALID_STATUSES.indexOf(status) < 0) throw new Error('졸업 후 상태를 선택하세요.');
 
     const sourceSheet = getCurrentStudentsSheet_();
-    const transferSheet = getOrCreateSheet_(STUDENT_TRANSFERS_SHEET, STUDENT_TRANSFER_HEADERS);
-    const targetSheet = getDataSheet_(year);
+    const targetInfo = getGraduateSheetInfo_(year, ['graduationYear', 'studentId', 'name', 'status', 'detail']);
+    const targetSheet = targetInfo.sheet;
     const currentRows = sourceSheet.getDataRange().getValues();
     const sourceIndex = currentRows.slice(1).findIndex(row => String(row[0]).trim() === studentId);
+    const targetRows = targetSheet.getDataRange().getValues();
+    const studentIdColumn = targetInfo.indexes.studentId;
+    const nameColumn = targetInfo.indexes.name;
+    const statusColumn = targetInfo.indexes.status;
+    let targetIndex = targetRows.slice(1).findIndex(row => String(row[studentIdColumn]).trim() === studentId);
+
+    const otherYearMatch = listDataSheets_().filter(otherYear => otherYear !== year).some(otherYear => {
+      const other = getGraduateSheetInfo_(otherYear);
+      return other.values.slice(1).some(row => String(row[other.indexes.studentId]).trim() === studentId);
+    });
+    if (otherYearMatch) throw new Error('같은 학생 ID가 다른 연도 졸업생 시트에 이미 있습니다. 중복 여부를 관리자에게 확인하세요.');
+
+    const transferSheet = getOrCreateSheet_(STUDENT_TRANSFERS_SHEET, STUDENT_TRANSFER_HEADERS);
     const ledgerRows = transferSheet.getDataRange().getValues();
     let ledgerIndex = ledgerRows.slice(1).findIndex(row => String(row[1]) === studentId && String(row[2]) === year && String(row[3]) !== 'rolled_back');
-    const targetRows = targetSheet.getDataRange().getValues();
-    let targetIndex = targetRows.slice(1).findIndex(row => String(row[1]).trim() === studentId);
 
     if (ledgerIndex >= 0 && String(ledgerRows[ledgerIndex + 1][3]) === 'completed') {
       if (sourceIndex < 0 && targetIndex >= 0) return { ok: true, alreadyCompleted: true, studentId: studentId, graduationYear: year };
@@ -280,7 +303,8 @@ function transferCurrentStudent_(session, request) {
     const student = Object.fromEntries(CURRENT_STUDENT_HEADERS.map((header, index) => [header, String(sourceRow[index] == null ? '' : sourceRow[index]).trim()]));
     const preserved = [['생년월일', student.birth_date], ['이메일', student.email], ['소속', student.affiliation], ['재학 상태', student.enrollment_status], ['참고사항', student.notes], ['재학생 최초 등록일', student.created_at], ['재학생 최종 수정일', student.updated_at]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`);
     const detail = preserved.length ? `[재학생 전환 시 보존 정보]\n${preserved.join('\n')}` : '';
-    const graduateRow = [year, studentId, student.name, student.gender, student.phone, '', status, '', '', detail, '', nowSeoul_()];
+    const graduateRecord = { graduationYear: year, studentId: studentId, name: student.name, gender: student.gender, phone: student.phone, address: '', status: status, company: '', field: '', detail: detail, gpa: '', updatedAt: nowSeoul_() };
+    const graduateRow = targetInfo.headers.map(header => Object.prototype.hasOwnProperty.call(graduateRecord, header) ? graduateRecord[header] : '');
     const now = nowSeoul_();
     if (ledgerIndex < 0) {
       transferSheet.appendRow([Utilities.getUuid(), studentId, year, 'prepared', now, now, '']);
@@ -300,13 +324,14 @@ function transferCurrentStudent_(session, request) {
       } else {
         const existing = targetRows[targetIndex + 1];
         const priorState = String(ledgerRows[ledgerIndex + 1]?.[3] || 'prepared');
-        const matchesTransfer = String(existing[2]) === student.name && String(existing[3]) === student.gender && String(existing[4]) === student.phone && String(existing[6]) === status && String(existing[9]) === detail;
+        const cell = (row, header) => targetInfo.indexes[header] == null ? '' : String(row[targetInfo.indexes[header]] == null ? '' : row[targetInfo.indexes[header]]);
+        const matchesTransfer = cell(existing, 'name') === student.name && cell(existing, 'gender') === student.gender && cell(existing, 'phone') === student.phone && cell(existing, 'status') === status && (targetInfo.indexes.detail == null || cell(existing, 'detail') === detail);
         if (!matchesTransfer || !['prepared', 'graduate_saved', 'counselings_moved', 'recovery_required'].includes(priorState)) throw new Error('대상 연도의 기존 졸업생 자료를 동일 전환 건으로 확인할 수 없습니다.');
         destinationCreatedOrOwned = true;
       }
       writeState('graduate_saved');
-      const savedGraduate = targetSheet.getDataRange().getValues().slice(1).find(row => String(row[1]).trim() === studentId);
-      if (!savedGraduate || String(savedGraduate[2]) !== student.name || String(savedGraduate[6]) !== status) throw new Error('졸업생 시트 저장 결과를 확인하지 못했습니다.');
+      const savedGraduate = targetSheet.getDataRange().getValues().slice(1).find(row => String(row[studentIdColumn]).trim() === studentId);
+      if (!savedGraduate || String(savedGraduate[nameColumn]) !== student.name || String(savedGraduate[statusColumn]) !== status) throw new Error('졸업생 시트 저장 결과를 확인하지 못했습니다.');
 
       const counselingSheet = getOrCreateSheet_(COUNSELINGS_SHEET, COUNSELING_HEADERS);
       const counselingRows = counselingSheet.getDataRange().getValues();
@@ -327,7 +352,7 @@ function transferCurrentStudent_(session, request) {
     } catch (error) {
       const sourceStillExists = sourceSheet.getDataRange().getValues().slice(1).some(row => String(row[0]).trim() === studentId);
       if (sourceRemoved || !sourceStillExists) {
-        const verifiedDestination = targetSheet.getDataRange().getValues().slice(1).some(row => String(row[1]).trim() === studentId && String(row[2]) === student.name && String(row[6]) === status);
+        const verifiedDestination = targetSheet.getDataRange().getValues().slice(1).some(row => String(row[studentIdColumn]).trim() === studentId && String(row[nameColumn]) === student.name && String(row[statusColumn]) === status);
         if (verifiedDestination) {
           writeState('completed', '원본 삭제 후 응답 처리 오류: ' + (error.message || String(error)));
           return { ok: true, studentId: studentId, graduationYear: year, recoveredAsCompleted: true };
@@ -341,7 +366,8 @@ function transferCurrentStudent_(session, request) {
         for (let i = 1; i < values.length; i++) if (String(values[i][2]) === studentId && String(values[i][1]) === year) counselingSheet.getRange(i + 1, 2).setValue('재학생');
         if (destinationCreatedOrOwned) {
           const graduates = targetSheet.getDataRange().getValues();
-          const ownedIndex = graduates.slice(1).findIndex(row => String(row[1]).trim() === studentId && String(row[2]) === student.name && String(row[9]) === detail);
+          const detailColumn = targetInfo.indexes.detail;
+          const ownedIndex = graduates.slice(1).findIndex(row => String(row[studentIdColumn]).trim() === studentId && String(row[nameColumn]) === student.name && (detailColumn == null || String(row[detailColumn]) === detail));
           if (ownedIndex >= 0) targetSheet.deleteRow(ownedIndex + 2);
         }
         writeState('rolled_back', error.message || String(error));
@@ -364,21 +390,24 @@ function saveStudent_(session, request) {
   DATA_HEADERS.forEach(header => { student[header] = String(input[header] == null ? '' : input[header]).trim(); });
   student.graduationYear = year;
   if (student.gpa && (!/^\d{1,2}(\.\d{1,2})?$/.test(student.gpa) || Number(student.gpa) > 4.5)) throw new Error('평점은 0~4.5 범위에서 입력하세요.');
-  const sheet = getDataSheet_(year);
-  const values = sheet.getDataRange().getValues();
-  const index = values.slice(1).findIndex(row => String(row[1]).trim() === studentId);
+  const info = getGraduateSheetInfo_(year);
+  const sheet = info.sheet;
+  const values = info.values;
+  const index = values.slice(1).findIndex(row => String(row[info.indexes.studentId]).trim() === studentId);
   const isCreate = index < 0;
-  const existingStatus = isCreate ? '' : String(values[index + 1][6] || '');
+  const existingStatus = isCreate ? '' : String(values[index + 1][info.indexes.status] || '');
   const preservesLegacyStatus = !isCreate && student.status === existingStatus && ['조사자', '미조사자', '국비교육자'].includes(existingStatus);
   if (student.status && VALID_STATUSES.indexOf(student.status) < 0 && !preservesLegacyStatus) throw new Error('올바른 졸업 후 상태를 선택하세요.');
   if (request.create && !isCreate) throw new Error('이미 등록된 학번입니다. 기존 학생을 선택해 수정하세요.');
   if (!request.create && isCreate) throw new Error('수정할 학생을 찾을 수 없습니다. 목록을 새로고침하세요.');
   if (isCreate) {
     student.updatedAt = now_();
-    sheet.appendRow(DATA_HEADERS.map(header => student[header] || ''));
+    sheet.appendRow(info.headers.map(header => Object.prototype.hasOwnProperty.call(student, header) ? student[header] : ''));
   } else {
     student.updatedAt = now_();
-    sheet.getRange(index + 2, 1, 1, DATA_HEADERS.length).setValues([DATA_HEADERS.map(header => student[header] || '')]);
+    const updatedRow = [...values[index + 1]];
+    DATA_HEADERS.forEach(header => { if (info.indexes[header] != null) updatedRow[info.indexes[header]] = student[header] || ''; });
+    sheet.getRange(index + 2, 1, 1, info.headers.length).setValues([updatedRow.slice(0, info.headers.length)]);
   }
   appendLog_(session, isCreate ? '학생 등록' : '학생 수정', year, studentId, name, isCreate ? '학생 정보 등록' : '학생 정보 수정');
   return { ok: true, student: student };
@@ -388,12 +417,13 @@ function deleteStudent_(session, request) {
   const year = String(request.year || '').trim();
   const studentId = String(request.studentId || '').trim();
   if (!studentId) throw new Error('삭제할 학번이 없습니다.');
-  const sheet = getDataSheet_(year);
-  const values = sheet.getDataRange().getValues();
-  const index = values.slice(1).findIndex(row => String(row[1]).trim() === studentId);
+  const info = getGraduateSheetInfo_(year);
+  const sheet = info.sheet;
+  const values = info.values;
+  const index = values.slice(1).findIndex(row => String(row[info.indexes.studentId]).trim() === studentId);
   if (index < 0) throw new Error('학생을 찾을 수 없습니다.');
   const row = values[index + 1];
-  appendLog_(session, '학생 삭제', year, row[1], row[2], '학생 정보 삭제');
+  appendLog_(session, '학생 삭제', year, row[info.indexes.studentId], row[info.indexes.name], '학생 정보 삭제');
   sheet.deleteRow(index + 2);
   return { ok: true };
 }

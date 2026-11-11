@@ -11,7 +11,7 @@
 .sortable-header{display:inline-flex;align-items:center;gap:5px;border:0;background:transparent;padding:0;color:inherit;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}
 .sortable-header svg{color:#98a4b5}
 .sortable-header:hover{color:#1e3a6e}
-.current-student-layout{align-items:stretch}
+.current-student-layout{align-items:start}
 .current-student-detail{min-width:0}
 .current-counselings{margin:0!important;border:0!important;border-top:1px solid #e8edf3!important;border-radius:0!important;overflow:visible!important}
 .current-student-detail>.current-counselings .panel-title{border:0;padding:17px 20px 10px}
@@ -23,6 +23,10 @@
 .current-transfer-modal>header{display:flex;align-items:center;justify-content:space-between;padding:18px 21px;border-bottom:1px solid #edf0f4}
 .current-transfer-modal h2{margin:0;color:#213653;font-size:17px}
 .current-transfer-body{display:grid;gap:15px;padding:19px 21px}
+.current-transfer-student-info{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;margin:0;padding:12px;border-radius:9px;background:#f7f9fc}
+.current-transfer-student-info>div{min-width:0}
+.current-transfer-student-info dt{color:#7b8798;font-size:11px}
+.current-transfer-student-info dd{overflow-wrap:anywhere;margin:2px 0 0;color:#344660;font-size:13px;font-weight:600}
 .current-transfer-note{margin:0;padding:12px;border-radius:8px;background:#f7f9fc;color:#5c6c82;font-size:12px;line-height:1.6}
 .current-transfer-modal>footer{display:flex;justify-content:flex-end;gap:8px;padding:13px 21px 18px;border-top:1px solid #edf0f4}
 @media(max-width:760px){.current-student-layout{grid-template-columns:minmax(0,1fr)}.current-student-rows{max-height:360px}.current-student-detail>.panel-title{align-items:flex-start}.current-student-form{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}

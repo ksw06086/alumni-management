@@ -144,7 +144,9 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
   });
 
   await t.test('transfers a current student and counseling to an existing graduate year only for admins', () => {
-    app.sheets.set('2026', new Sheet('2026'));
+    const graduate2026 = new Sheet('2026');
+    graduate2026.rows = [['graduationYear', 'studentId', 'name', 'gender', 'phone', 'address', 'status', 'company', 'field', 'detail', 'gpa', 'updatedAt']];
+    app.sheets.set('2026', graduate2026);
     const currentCounselings = new Sheet('counselings');
     currentCounselings.rows = [
       ['counselingId', 'graduationYear', 'studentId', 'studentName', 'counseledAt', 'content', 'authorUserId', 'authorName', 'createdAt', 'updatedAt'],
@@ -180,6 +182,33 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     assert.equal(app.call({ action: 'currentStudents', token: adminToken }).students.some(student => student.student_id === 'C003'), true);
   });
 
+  await t.test('maps a transfer by existing year-sheet headers and never creates a missing year sheet', () => {
+    const reordered = new Sheet('2027');
+    reordered.rows = [['name', 'status', 'studentId', 'graduationYear', 'detail', 'phone', 'gender'], ['Existing', '기타', 'S900', '2027', '', '', '']];
+    app.sheets.set('2027', reordered);
+    assert.equal(app.call({ action: 'saveCurrentStudent', token: adminToken, create: true, student: { student_id: 'C010', name: 'Header Mapped', gender: 'F', phone: '010-0100' } }).ok, true);
+    const transferred = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C010', graduationYear: '2027', status: '진학자' });
+    assert.equal(transferred.ok, true, transferred.error);
+    assert.equal(reordered.rows[2][0], 'Header Mapped');
+    assert.equal(reordered.rows[2][1], '진학자');
+    assert.equal(reordered.rows[2][2], 'C010');
+    assert.equal(reordered.rows[2][5], '010-0100');
+    assert.equal(reordered.rows[2][6], 'F');
+    const read = app.call({ action: 'students', token: adminToken, year: '2027' });
+    assert.equal(read.students.find(student => student.studentId === 'C010').status, '진학자');
+
+    assert.equal(app.call({ action: 'saveCurrentStudent', token: adminToken, create: true, student: { student_id: 'C011', name: 'Cross Year Duplicate' } }).ok, true);
+    app.sheets.get('2026').appendRow(['2026', 'C011', 'Existing Duplicate', '', '', '', '기타', '', '', '', '', '']);
+    const duplicateYear = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C011', graduationYear: '2027', status: '기타' });
+    assert.equal(duplicateYear.ok, false, 'student IDs already present in another year are rejected');
+    assert.equal(app.call({ action: 'currentStudents', token: adminToken }).students.some(student => student.student_id === 'C011'), true, 'source student remains after cross-year duplicate rejection');
+
+    const missingYear = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C001', graduationYear: '2028', status: '기타' });
+    assert.equal(missingYear.ok, false);
+    assert.equal(app.sheets.has('2028'), false, 'transfer does not create a missing graduation year sheet');
+    assert.equal(app.sheets.has('졸업생전환'), false, 'no separate graduate transfer sheet is created');
+  });
+
   await t.test('reads students and rejects invalid sheet names', () => {
     const result = app.call({ action: 'students', token: adminToken, year: '2025' });
     assert.equal(result.ok, true);
@@ -189,7 +218,9 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
   });
 
   await t.test('returns sheets added after the session was created', () => {
-    app.sheets.set('2026', new Sheet('2026'));
+    const addedYear = new Sheet('2026');
+    addedYear.rows = [['graduationYear', 'studentId', 'name', 'gender', 'phone', 'address', 'status', 'company', 'field', 'detail', 'gpa', 'updatedAt']];
+    app.sheets.set('2026', addedYear);
     const result = app.call({ action: 'sheets', token: adminToken });
     assert.equal(result.ok, true);
     assert.ok(result.sheets.includes('2026'));
@@ -221,6 +252,15 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     assert.equal(logs.ok, true);
     assert.ok(logs.logs.some(log => log.action === '학생 등록'));
     assert.ok(logs.logs.some(log => log.action === '학생 삭제'));
+  });
+
+  await t.test('adds converted graduates to the existing 2025 sheet', () => {
+    assert.equal(app.call({ action: 'saveCurrentStudent', token: adminToken, create: true, student: { student_id: 'C020', name: '2025 Transfer' } }).ok, true);
+    const result = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C020', graduationYear: '2025', status: '취업자' });
+    assert.equal(result.ok, true, result.error);
+    const graduates = app.call({ action: 'students', token: adminToken, year: '2025' }).students;
+    assert.equal(graduates.find(student => student.studentId === 'C020').name, '2025 Transfer');
+    assert.equal(app.call({ action: 'currentStudents', token: adminToken }).students.some(student => student.student_id === 'C020'), false);
   });
 
   await t.test('stores counseling separately, scopes by student, sorts newest first and preserves the original author', () => {
