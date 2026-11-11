@@ -206,6 +206,30 @@ function getGraduateSheetInfo_(year, requiredHeaders) {
   if (!headers.length || missing.length) throw new Error(`${target}년 시트의 필수 컬럼이 없습니다: ${missing.join(', ') || '헤더 행'}`);
   return { sheet: sheet, headers: headers, values: values, indexes: Object.fromEntries(headers.map((header, index) => [header, index])) };
 }
+function getOrCreateGraduateYearSheetInfo_(year) {
+  const book = SpreadsheetApp.openById(SPREADSHEET_ID);
+  let sheet = book.getSheetByName(year);
+  if (!sheet) {
+    const years = listDataSheets_().sort((a, b) => Number(b) - Number(a));
+    const template = years.length ? book.getSheetByName(years[0]) : null;
+    try {
+      if (template) {
+        sheet = template.copyTo(book).setName(year);
+        // clearContents keeps the template's formatting and data validation while removing copied student rows.
+        sheet.clearContents();
+        const templateHeaders = getGraduateSheetInfo_(years[0]).headers;
+        sheet.getRange(1, 1, 1, templateHeaders.length).setValues([templateHeaders]);
+      } else {
+        // DATA_HEADERS is the project's canonical graduate schema when no annual sheet exists yet.
+        sheet = book.insertSheet(year);
+        sheet.getRange(1, 1, 1, DATA_HEADERS.length).setValues([DATA_HEADERS]);
+      }
+    } catch (error) {
+      throw new Error(`${year}년도 졸업생 시트를 생성하지 못했습니다. 다시 시도해 주세요. ${error.message || String(error)}`);
+    }
+  }
+  return getGraduateSheetInfo_(year, ['graduationYear', 'studentId', 'name', 'status', 'detail']);
+}
 function readStudents_(year) {
   const info = getGraduateSheetInfo_(year);
   return info.values.slice(1).filter(row => row.some(Boolean)).map(row => Object.fromEntries(DATA_HEADERS.map(header => [header, row[info.indexes[header]] == null ? '' : String(row[info.indexes[header]])] )));
@@ -254,28 +278,27 @@ function transferCurrentStudent_(session, request) {
   if (!lock.tryLock(10000)) throw new Error('다른 전환 작업이 진행 중입니다. 잠시 후 다시 시도하세요.');
   try {
     const studentId = String(request.studentId || '').trim();
-    const year = String(request.graduationYear || '').trim();
-    const status = String(request.status || '').trim();
-    if (!studentId) throw new Error('전환할 학생을 선택하세요.');
-    if (!/^\d{4}$/.test(year) || listDataSheets_().indexOf(year) < 0) throw new Error('졸업연도 시트를 찾을 수 없습니다. 먼저 해당 연도 시트를 준비하세요.');
-    if (VALID_STATUSES.indexOf(status) < 0) throw new Error('졸업 후 상태를 선택하세요.');
+    const year = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy');
+    const status = '미취업자';
+    if (!studentId) throw new Error('학번이 비어 있어 졸업생 전환을 진행할 수 없습니다.');
+    if (!/^\d{4}$/.test(year)) throw new Error('한국 표준시 기준 현재 연도를 확인할 수 없어 전환을 중단했습니다.');
 
     const sourceSheet = getCurrentStudentsSheet_();
-    const targetInfo = getGraduateSheetInfo_(year, ['graduationYear', 'studentId', 'name', 'status', 'detail']);
-    const targetSheet = targetInfo.sheet;
     const currentRows = sourceSheet.getDataRange().getValues();
     const sourceIndex = currentRows.slice(1).findIndex(row => String(row[0]).trim() === studentId);
+    const existingYear = listDataSheets_().filter(otherYear => otherYear !== year).sort((a, b) => Number(a) - Number(b)).find(otherYear => {
+      const other = getGraduateSheetInfo_(otherYear);
+      return other.values.slice(1).some(row => String(row[other.indexes.studentId] == null ? '' : row[other.indexes.studentId]).trim() === studentId);
+    });
+    if (existingYear) throw new Error(`이미 등록된 학번입니다. 졸업생 전환을 진행할 수 없습니다. 학번 ${studentId}은 ${existingYear}년도 졸업생 명단에 이미 등록되어 있습니다.`);
+
+    const targetInfo = getOrCreateGraduateYearSheetInfo_(year);
+    const targetSheet = targetInfo.sheet;
     const targetRows = targetSheet.getDataRange().getValues();
     const studentIdColumn = targetInfo.indexes.studentId;
     const nameColumn = targetInfo.indexes.name;
     const statusColumn = targetInfo.indexes.status;
     let targetIndex = targetRows.slice(1).findIndex(row => String(row[studentIdColumn]).trim() === studentId);
-
-    const otherYearMatch = listDataSheets_().filter(otherYear => otherYear !== year).some(otherYear => {
-      const other = getGraduateSheetInfo_(otherYear);
-      return other.values.slice(1).some(row => String(row[other.indexes.studentId]).trim() === studentId);
-    });
-    if (otherYearMatch) throw new Error('같은 학생 ID가 다른 연도 졸업생 시트에 이미 있습니다. 중복 여부를 관리자에게 확인하세요.');
 
     const transferSheet = getOrCreateSheet_(STUDENT_TRANSFERS_SHEET, STUDENT_TRANSFER_HEADERS);
     const ledgerRows = transferSheet.getDataRange().getValues();
@@ -296,8 +319,8 @@ function transferCurrentStudent_(session, request) {
       transferSheet.getRange(ledgerRow, 6, 1, 2).setValues([[nowSeoul_(), '재시도에서 졸업생 데이터 확인 후 완료 처리']]);
       return { ok: true, alreadyCompleted: true, studentId: studentId, graduationYear: year, recoveredAsCompleted: true };
     }
-    if (sourceIndex < 0) throw new Error('재학생 명단에서 학생을 찾을 수 없습니다.');
-    if (targetIndex >= 0 && ledgerIndex < 0) throw new Error('같은 학번의 졸업생이 이미 있어 중복 전환할 수 없습니다.');
+    if (sourceIndex < 0) throw new Error('재학생 명단에서 전환할 학생을 찾을 수 없습니다. 명단을 새로고침한 뒤 다시 시도하세요.');
+    if (targetIndex >= 0 && ledgerIndex < 0) throw new Error(`이미 등록된 학번입니다. 학번 ${studentId}은 ${year}년도 졸업생 명단에 이미 등록되어 있습니다.`);
 
     const sourceRow = currentRows[sourceIndex + 1];
     const student = Object.fromEntries(CURRENT_STUDENT_HEADERS.map((header, index) => [header, String(sourceRow[index] == null ? '' : sourceRow[index]).trim()]));

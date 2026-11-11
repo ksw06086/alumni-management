@@ -11,6 +11,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 function makeHarness() {
   const sheets = new Map();
   const cacheValues = new Map();
+  let currentYear = '2026';
   let googleProfile = { email: 'admin@example.com', email_verified: true, aud: 'test-client' };
   const users = new Sheet('사용자목록');
   users.rows = [
@@ -35,8 +36,10 @@ function makeHarness() {
     remove: key => cacheValues.delete(key),
   };
   const workbook = {
+    sheets,
     getSheetByName: name => sheets.get(name) || null,
     insertSheet: name => { const sheet = new Sheet(name); sheets.set(name, sheet); return sheet; },
+    renameSheet: (oldName, newName, sheet) => { sheets.delete(oldName); sheets.set(newName, sheet); },
     getSheets: () => [...sheets.values()],
   };
   const bytes = value => [...value].map(byte => byte > 127 ? byte - 256 : byte);
@@ -49,7 +52,7 @@ function makeHarness() {
       return bytes(crypto.createHmac('sha256', keyBuffer).update(valueBuffer).digest());
     },
     getUuid: () => crypto.randomUUID(),
-    formatDate: value => value.toISOString().replace('T', ' ').slice(0, 19),
+    formatDate: (value, _timezone, pattern) => pattern === 'yyyy' ? currentYear : value.toISOString().replace('T', ' ').slice(0, 19),
   };
   const context = vm.createContext({
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => ({ SPREADSHEET_ID: 'test-sheet', GOOGLE_CLIENT_ID: 'test-client' })[key] || null }) },
@@ -71,12 +74,25 @@ function makeHarness() {
     sheets,
     clearCache: () => cacheValues.clear(),
     setGoogleProfile: profile => { googleProfile = profile; },
+    setCurrentYear: year => { currentYear = String(year); },
   };
 }
 
 class Sheet {
   constructor(name) { this.name = name; this.rows = []; }
   getName() { return this.name; }
+  setName(name) { const oldName = this.name; this.name = name; this.renameFn?.(oldName, name, this); return this; }
+  copyTo(book) {
+    let name = `Copy of ${this.name}`;
+    let suffix = 1;
+    while (book.getSheetByName(name)) name = `Copy of ${this.name} (${suffix++})`;
+    const copy = new Sheet(name);
+    copy.rows = this.rows.map(row => [...row]);
+    copy.renameFn = book.renameSheet;
+    book.sheets.set(name, copy);
+    return copy;
+  }
+  clearContents() { this.rows = []; }
   getLastRow() { return this.rows.length; }
   getDataRange() { return { getValues: () => this.rows.map(row => [...row]) }; }
   getRange(row, column, rowCount = 1, columnCount = 1) {
@@ -182,30 +198,31 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     assert.equal(app.call({ action: 'currentStudents', token: adminToken }).students.some(student => student.student_id === 'C003'), true);
   });
 
-  await t.test('maps a transfer by existing year-sheet headers and never creates a missing year sheet', () => {
+  await t.test('uses the server current year, forces unemployment status, and rejects cross-year duplicates', () => {
     const reordered = new Sheet('2027');
     reordered.rows = [['name', 'status', 'studentId', 'graduationYear', 'detail', 'phone', 'gender'], ['Existing', '기타', 'S900', '2027', '', '', '']];
     app.sheets.set('2027', reordered);
     assert.equal(app.call({ action: 'saveCurrentStudent', token: adminToken, create: true, student: { student_id: 'C010', name: 'Header Mapped', gender: 'F', phone: '010-0100' } }).ok, true);
     const transferred = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C010', graduationYear: '2027', status: '진학자' });
     assert.equal(transferred.ok, true, transferred.error);
-    assert.equal(reordered.rows[2][0], 'Header Mapped');
-    assert.equal(reordered.rows[2][1], '진학자');
-    assert.equal(reordered.rows[2][2], 'C010');
-    assert.equal(reordered.rows[2][5], '010-0100');
-    assert.equal(reordered.rows[2][6], 'F');
-    const read = app.call({ action: 'students', token: adminToken, year: '2027' });
-    assert.equal(read.students.find(student => student.studentId === 'C010').status, '진학자');
+    const read = app.call({ action: 'students', token: adminToken, year: '2026' });
+    const transferredStudent = read.students.find(student => student.studentId === 'C010');
+    assert.equal(transferredStudent.name, 'Header Mapped');
+    assert.equal(transferredStudent.status, '미취업자');
+    assert.equal(transferredStudent.phone, '010-0100');
+    assert.equal(transferredStudent.gender, 'F');
+    assert.equal(reordered.rows.length, 2, 'client-supplied year sheet remains unchanged');
 
     assert.equal(app.call({ action: 'saveCurrentStudent', token: adminToken, create: true, student: { student_id: 'C011', name: 'Cross Year Duplicate' } }).ok, true);
     app.sheets.get('2026').appendRow(['2026', 'C011', 'Existing Duplicate', '', '', '', '기타', '', '', '', '', '']);
     const duplicateYear = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C011', graduationYear: '2027', status: '기타' });
     assert.equal(duplicateYear.ok, false, 'student IDs already present in another year are rejected');
+    assert.match(duplicateYear.error, /C011은 2026년도/);
     assert.equal(app.call({ action: 'currentStudents', token: adminToken }).students.some(student => student.student_id === 'C011'), true, 'source student remains after cross-year duplicate rejection');
 
-    const missingYear = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C001', graduationYear: '2028', status: '기타' });
-    assert.equal(missingYear.ok, false);
-    assert.equal(app.sheets.has('2028'), false, 'transfer does not create a missing graduation year sheet');
+    const repeated = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C001', graduationYear: '2028', status: '기타' });
+    assert.equal(repeated.ok, true, 'repeat requests remain idempotent even if the client sends a different year');
+    assert.equal(app.sheets.has('2028'), false, 'the client cannot select or create another year');
     assert.equal(app.sheets.has('졸업생전환'), false, 'no separate graduate transfer sheet is created');
   });
 
@@ -254,12 +271,14 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     assert.ok(logs.logs.some(log => log.action === '학생 삭제'));
   });
 
-  await t.test('adds converted graduates to the existing 2025 sheet', () => {
+  await t.test('adds converted graduates to the server current-year sheet', () => {
     assert.equal(app.call({ action: 'saveCurrentStudent', token: adminToken, create: true, student: { student_id: 'C020', name: '2025 Transfer' } }).ok, true);
     const result = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C020', graduationYear: '2025', status: '취업자' });
     assert.equal(result.ok, true, result.error);
-    const graduates = app.call({ action: 'students', token: adminToken, year: '2025' }).students;
+    assert.equal(result.graduationYear, '2026');
+    const graduates = app.call({ action: 'students', token: adminToken, year: '2026' }).students;
     assert.equal(graduates.find(student => student.studentId === 'C020').name, '2025 Transfer');
+    assert.equal(graduates.find(student => student.studentId === 'C020').status, '미취업자');
     assert.equal(app.call({ action: 'currentStudents', token: adminToken }).students.some(student => student.student_id === 'C020'), false);
   });
 
@@ -356,4 +375,40 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     assert.equal(app.call({ action: 'statistics', token: fresh.token }).ok, false);
     assert.equal(app.call({ action: 'login', userId: 'admin', password: 'strong-admin-password' }).ok, false);
   });
+});
+
+test('graduate transfer creates only the server current-year tab from the latest template without copying its student rows', () => {
+  const app = makeHarness();
+  const login = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
+  const templateHeaders = [...app.sheets.get('2025').rows[0]];
+  const result = app.call({ action: 'transferCurrentStudent', token: login.token, studentId: 'C001', graduationYear: '2099', status: '취업자' });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.graduationYear, '2026');
+  const target = app.sheets.get('2026');
+  assert.deepEqual(target.rows[0], templateHeaders);
+  assert.equal(target.rows.length, 2, 'the template graduate row was cleared before adding the current student');
+  assert.equal(target.rows[1][1], 'C001');
+  assert.equal(target.rows[1][6], '미취업자');
+  assert.equal(app.sheets.get('2025').rows.length, 2, 'the template year remains unchanged');
+  assert.equal(app.call({ action: 'currentStudents', token: login.token }).students.some(student => student.student_id === 'C001'), false);
+  assert.equal(app.sheets.has('졸업생전환'), false);
+});
+
+test('graduate transfer uses the canonical schema if no annual template exists', () => {
+  const app = makeHarness();
+  const login = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
+  app.sheets.delete('2025');
+  const result = app.call({ action: 'transferCurrentStudent', token: login.token, studentId: 'C001' });
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(app.sheets.get('2026').rows[0], ['graduationYear', 'studentId', 'name', 'gender', 'phone', 'address', 'status', 'company', 'field', 'detail', 'gpa', 'updatedAt']);
+});
+
+test('graduate transfer follows the server year when the calendar year changes', () => {
+  const app = makeHarness();
+  const login = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
+  app.setCurrentYear('2027');
+  const result = app.call({ action: 'transferCurrentStudent', token: login.token, studentId: 'C001' });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.graduationYear, '2027');
+  assert.equal(app.sheets.get('2027').rows[1][0], '2027');
 });
