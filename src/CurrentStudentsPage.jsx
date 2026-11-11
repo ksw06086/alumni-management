@@ -35,7 +35,15 @@ export default function CurrentStudentsPage({ auth, api, run, loading, setMessag
     if (!selected || transferInProgress || loading) return;
     setTransferInProgress(true);
     run(async () => {
-      const result = await api('transferCurrentStudent', { token: auth.token, studentId: selected.student_id });
+      let result;
+      try {
+        result = await api('transferCurrentStudent', { token: auth.token, studentId: selected.student_id });
+      } catch (error) {
+        const message = error.message || '졸업생 전환에 실패했습니다.';
+        setMessage(message);
+        window.alert(message);
+        throw error;
+      }
       const year = result.graduationYear;
       setMessage(`${year}년도 졸업생 명단으로 전환되었습니다. (상태: 미취업자)`);
       await refresh();

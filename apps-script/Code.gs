@@ -249,6 +249,42 @@ function readCurrentStudents_() {
   const values = sheet.getDataRange().getValues();
   return values.slice(1).filter(row => row.some(Boolean)).map(row => Object.fromEntries(CURRENT_STUDENT_HEADERS.map((header, index) => [header, row[index] == null ? '' : String(row[index])] )));
 }
+function formatPreservedDate_(value, dateOnly, sourceTimeZone) {
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) return String(value);
+    return formatKoreanDateObject_(value, dateOnly);
+  }
+  const text = String(value == null ? '' : value).trim();
+  if (!text) return '';
+  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(text);
+  const separated = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  const dateParts = compact || separated;
+  if (dateParts) {
+    const year = Number(dateParts[1]), month = Number(dateParts[2]), day = Number(dateParts[3]);
+    const date = new Date(0);
+    date.setUTCHours(0, 0, 0, 0);
+    date.setUTCFullYear(year, month - 1, day);
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return text;
+    return `${dateParts[1]}년 ${dateParts[2]}월 ${dateParts[3]}일`;
+  }
+  const isoDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})$/i;
+  const englishDateTime = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT[+-]\d{4}(?:\s+\(.+\))?$/i;
+  const scriptDateTime = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text);
+  if (!isoDateTime.test(text) && !englishDateTime.test(text) && !scriptDateTime) return text;
+  let date;
+  try { date = scriptDateTime ? Utilities.parseDate(text, sourceTimeZone || Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') : new Date(text); }
+  catch (_) { return text; }
+  if (isNaN(date.getTime())) return text;
+  return formatKoreanDateObject_(date, dateOnly);
+}
+function formatKoreanDateObject_(date, dateOnly) {
+  const options = { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' };
+  if (!dateOnly) Object.assign(options, { weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('ko-KR', options).formatToParts(date).map(part => [part.type, part.value]));
+  const formattedDate = `${parts.year}년 ${parts.month}월 ${parts.day}일`;
+  const period = /^AM$/i.test(parts.dayPeriod || '') ? '오전' : /^PM$/i.test(parts.dayPeriod || '') ? '오후' : parts.dayPeriod;
+  return dateOnly ? formattedDate : `${formattedDate} (${parts.weekday}) ${period} ${parts.hour}시 ${parts.minute}분 ${parts.second}초`;
+}
 function saveCurrentStudent_(session, request) {
   const input = request.student || {};
   const studentId = String(input.student_id || '').trim();
@@ -275,6 +311,8 @@ function saveCurrentStudent_(session, request) {
 // 연도 시트의 학생 CRUD. 컬럼 순서는 DATA_HEADERS와 시트 1행이 일치해야 합니다.
 function transferCurrentStudent_(session, request) {
   const lock = LockService.getScriptLock();
+  const requestStartedAt = new Date();
+  const requestStartedAtIso = requestStartedAt.toISOString();
   if (!lock.tryLock(10000)) throw new Error('다른 전환 작업이 진행 중입니다. 잠시 후 다시 시도하세요.');
   try {
     const studentId = String(request.studentId || '').trim();
@@ -302,7 +340,8 @@ function transferCurrentStudent_(session, request) {
 
     const transferSheet = getOrCreateSheet_(STUDENT_TRANSFERS_SHEET, STUDENT_TRANSFER_HEADERS);
     const ledgerRows = transferSheet.getDataRange().getValues();
-    let ledgerIndex = ledgerRows.slice(1).findIndex(row => String(row[1]) === studentId && String(row[2]) === year && String(row[3]) !== 'rolled_back');
+    let ledgerIndex = -1;
+    for (let i = 0; i < ledgerRows.length - 1; i++) if (String(ledgerRows[i + 1][1]) === studentId && String(ledgerRows[i + 1][2]) === year) ledgerIndex = i;
 
     if (ledgerIndex >= 0 && String(ledgerRows[ledgerIndex + 1][3]) === 'completed') {
       if (sourceIndex < 0 && targetIndex >= 0) return { ok: true, alreadyCompleted: true, studentId: studentId, graduationYear: year };
@@ -324,14 +363,18 @@ function transferCurrentStudent_(session, request) {
 
     const sourceRow = currentRows[sourceIndex + 1];
     const student = Object.fromEntries(CURRENT_STUDENT_HEADERS.map((header, index) => [header, String(sourceRow[index] == null ? '' : sourceRow[index]).trim()]));
-    const preserved = [['생년월일', student.birth_date], ['이메일', student.email], ['소속', student.affiliation], ['재학 상태', student.enrollment_status], ['참고사항', student.notes], ['재학생 최초 등록일', student.created_at], ['재학생 최종 수정일', student.updated_at]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`);
+    const recordedTransferAt = ledgerIndex >= 0 ? String(ledgerRows[ledgerIndex + 1][4] || '') : '';
+    const transferAt = recordedTransferAt || requestStartedAt;
+    const transferDate = formatPreservedDate_(transferAt, false, recordedTransferAt && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(recordedTransferAt) ? 'Asia/Seoul' : undefined);
+    const preserved = [['생년월일', formatPreservedDate_(student.birth_date, true)], ['이메일', student.email], ['소속', student.affiliation], ['재학 상태', student.enrollment_status], ['참고사항', student.notes], ['재학생 최초 등록일', formatPreservedDate_(student.created_at, false)], ['재학생 졸업 전환일', transferDate]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`);
     const detail = preserved.length ? `[재학생 전환 시 보존 정보]\n${preserved.join('\n')}` : '';
     const graduateRecord = { graduationYear: year, studentId: studentId, name: student.name, gender: student.gender, phone: student.phone, address: '', status: status, company: '', field: '', detail: detail, gpa: '', updatedAt: nowSeoul_() };
     const graduateRow = targetInfo.headers.map(header => Object.prototype.hasOwnProperty.call(graduateRecord, header) ? graduateRecord[header] : '');
-    const now = nowSeoul_();
     if (ledgerIndex < 0) {
-      transferSheet.appendRow([Utilities.getUuid(), studentId, year, 'prepared', now, now, '']);
+      transferSheet.appendRow([Utilities.getUuid(), studentId, year, 'prepared', requestStartedAtIso, requestStartedAtIso, '']);
       ledgerIndex = transferSheet.getLastRow() - 2;
+    } else if (String(ledgerRows[ledgerIndex + 1][3]) === 'rolled_back') {
+      transferSheet.getRange(ledgerIndex + 2, 4).setValue('prepared');
     }
     const ledgerRowNumber = ledgerIndex + 2;
     const writeState = (state, errorText = '') => {

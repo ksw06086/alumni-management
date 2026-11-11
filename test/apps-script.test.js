@@ -27,7 +27,7 @@ function makeHarness() {
   sheets.set(users.name, users);
   sheets.set(yearly.name, yearly);
   const current = new Sheet('재학생');
-  current.rows = [['student_id', 'name', 'birth_date', 'gender', 'phone', 'email', 'affiliation', 'enrollment_status', 'notes', 'created_at', 'updated_at'], ['C001', 'Current Student', '2004-01-02', 'F', '010-1111', 'current@example.com', '학과', '재학', '', '2026-01-01', '2026-01-01']];
+  current.rows = [['student_id', 'name', 'birth_date', 'gender', 'phone', 'email', 'affiliation', 'enrollment_status', 'notes', 'created_at', 'updated_at'], ['C001', 'Current Student', '2004-01-02', 'F', '010-1111', 'current@example.com', '학과', '재학', '', 'Wed Oct 07 2026 11:08:05 GMT+0900 (韓國標準時間)', 'Wed Oct 07 2026 11:08:05 GMT+0900 (韓國標準時間)']];
   sheets.set(current.name, current);
 
   const cache = {
@@ -53,6 +53,7 @@ function makeHarness() {
     },
     getUuid: () => crypto.randomUUID(),
     formatDate: (value, _timezone, pattern) => pattern === 'yyyy' ? currentYear : value.toISOString().replace('T', ' ').slice(0, 19),
+    parseDate: value => new Date(`${value.replace(' ', 'T')}Z`),
   };
   const context = vm.createContext({
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => ({ SPREADSHEET_ID: 'test-sheet', GOOGLE_CLIENT_ID: 'test-client' })[key] || null }) },
@@ -179,6 +180,10 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     const graduate = app.call({ action: 'students', token: adminToken, year: '2026' }).students.find(student => student.studentId === 'C001');
     assert.equal(graduate.status, '미취업자');
     assert.match(graduate.detail, /이메일: current@example\.com/);
+    assert.match(graduate.detail, /생년월일: 2004년 01월 02일/);
+    assert.match(graduate.detail, /재학생 최초 등록일: 2026년 10월 07일 \(수\) 오전 11시 08분 05초/);
+    assert.match(graduate.detail, /재학생 졸업 전환일: \d{4}년 \d{2}월 \d{2}일 \([월화수목금토일]\) (오전|오후) \d{2}시 \d{2}분 \d{2}초/);
+    assert.doesNotMatch(graduate.detail, /재학생 최종 수정일/);
     assert.equal(currentCounselings.rows[1][1], '2026');
     assert.equal(app.call({ action: 'counselings', token: adminToken, year: '2026', studentId: 'C001' }).counselings[0].content, '상담 기록 보존 확인');
     assert.equal(app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C001', graduationYear: '2026', status: '미취업자' }).alreadyCompleted, true, 'a repeated transfer request is idempotent');
@@ -189,8 +194,15 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     const failed = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C002', graduationYear: '2026', status: '취업자' });
     target.failAppend = false;
     assert.equal(failed.ok, false);
+    const transferSheet = app.sheets.get('student_transfers');
+    const firstAttemptTime = transferSheet.rows.find(row => row[1] === 'C002')[4];
     assert.equal(app.call({ action: 'currentStudents', token: adminToken }).students.some(student => student.student_id === 'C002'), true, 'source row survives an append failure');
     assert.equal(app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C002', graduationYear: '2026', status: '취업자' }).ok, true, 'the rolled back transfer can be retried');
+    const retriedDetail = app.call({ action: 'students', token: adminToken, year: '2026' }).students.find(student => student.studentId === 'C002').detail;
+    const retryParts = Object.fromEntries(new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).formatToParts(new Date(firstAttemptTime)).map(part => [part.type, part.value]));
+    const retryPeriod = /^AM$/i.test(retryParts.dayPeriod || '') ? '오전' : /^PM$/i.test(retryParts.dayPeriod || '') ? '오후' : retryParts.dayPeriod;
+    const expectedDate = `재학생 졸업 전환일: ${retryParts.year}년 ${retryParts.month}월 ${retryParts.day}일 (${retryParts.weekday}) ${retryPeriod} ${retryParts.hour}시 ${retryParts.minute}분 ${retryParts.second}초`;
+    assert.ok(retriedDetail.includes(expectedDate), 'retry preserves the timestamp first written to the transfer ledger');
 
     assert.equal(app.call({ action: 'saveCurrentStudent', token: adminToken, create: true, student: { student_id: 'C003', name: 'Duplicate Student' } }).ok, true);
     target.appendRow(['2026', 'C003', 'Different Student', '', '', '', '기타', '', '', '', '', '']);
