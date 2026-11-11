@@ -28,7 +28,7 @@
 .design-shell main:has(.detail-panel) > .detail-panel { grid-area: detail; min-width: 0; align-self: start; }
 .design-shell main:has(.detail-panel) > .student-counseling-panel { grid-area: counsel; min-width: 0; align-self: start; }
 .design-shell main:has(.detail-panel) > .detail-panel { margin-bottom: 0; }
-.design-shell main:has(.detail-panel) > .student-counseling-panel { margin-top: 8px; }
+.design-shell main:has(.detail-panel) > .student-counseling-panel { margin-top: 2px; }
 .design-shell main:has(.detail-panel) > .notice { grid-column: 1 / -1; }
 .student-counseling-panel .panel-title { justify-content: space-between; padding: 16px 20px; }
 .student-counseling-panel .panel-title h2 { font-size: 19px; }

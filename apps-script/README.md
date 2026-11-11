@@ -14,7 +14,7 @@
 student_id, name, birth_date, gender, phone, email, affiliation, enrollment_status, notes, created_at, updated_at
 ```
 
-`사용자목록`, `logs`, `counselings` 시트는 API가 필요할 때 생성합니다. `재학생` 탭은 API가 생성하지 않으므로 먼저 만들어야 합니다. `counselings`는 학생 상담 이력을 별도로 저장하며, 재학생 기록은 구분값 `재학생`으로 저장합니다. 기존 `logs` 감사 기록은 변경하지 않습니다. 재학생 및 재학생 상담 API는 관리자만 사용할 수 있고, 작성자는 서버 세션에서 결정합니다. 세션은 Apps Script 캐시에 저장됩니다.
+`사용자목록`, `logs`, `counselings`, `student_transfers` 시트는 API가 필요할 때 생성합니다. `student_transfers`는 재학생 전환의 진행 단계와 실패 복구 상태를 기록하는 내부 장부입니다. `재학생` 탭은 API가 생성하지 않으므로 먼저 만들어야 합니다. `counselings`는 학생 상담 이력을 별도로 저장하며, 재학생 기록은 구분값 `재학생`으로 저장합니다. 졸업생 전환 시 기존 학생 ID를 유지하고 상담의 연도 참조를 대상 졸업 연도로 변경합니다. 졸업생 시트에 전용 컬럼이 없는 생년월일, 이메일, 소속, 재학 상태, 참고사항 및 등록·수정 시각은 졸업생 `detail` 필드에 항목별로 보존합니다. 기존 `logs` 감사 기록은 변경하지 않습니다. 재학생·전환·재학생 상담 API는 관리자만 사용할 수 있고, 작성자는 서버 세션에서 결정합니다. 세션은 Apps Script 캐시에 저장됩니다.
 
 Personal schedules use the user-created `스케줄` and `스케줄설정` tabs. Set the first row to these exact Korean headers. The API maps them to internal English field names and takes the owner ID from the authenticated session.
 

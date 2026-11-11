@@ -54,7 +54,7 @@ function makeHarness() {
   const context = vm.createContext({
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => ({ SPREADSHEET_ID: 'test-sheet', GOOGLE_CLIENT_ID: 'test-client' })[key] || null }) },
     SpreadsheetApp: { openById: () => workbook, getScriptTimeZone: () => 'UTC' },
-    CacheService: { getScriptCache: () => cache }, Utilities,
+    CacheService: { getScriptCache: () => cache }, LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) }, Utilities,
     Session: { getScriptTimeZone: () => 'UTC' },
     UrlFetchApp: { fetch: () => ({ getResponseCode: () => 200, getContentText: () => JSON.stringify(googleProfile) }) },
     ContentService: { createTextOutput: text => ({ text, setMimeType() { return this; } }), MimeType: { JSON: 'application/json' } },
@@ -95,7 +95,7 @@ class Sheet {
       },
     };
   }
-  appendRow(row) { this.rows.push([...row]); }
+  appendRow(row) { if (this.failAppend) throw new Error('mock append failure'); this.rows.push([...row]); }
   deleteRow(row) { this.rows.splice(row - 1, 1); }
 }
 
@@ -141,6 +141,43 @@ test('Apps Script API authentication, roles, student lifecycle, statistics, logs
     assert.equal(updated.ok, true);
     assert.equal(updated.student.affiliation, '학과 2');
     assert.equal(app.call({ action: 'login', userId: 'admin', password: 'strong-admin-password' }).ok, false);
+  });
+
+  await t.test('transfers a current student and counseling to an existing graduate year only for admins', () => {
+    app.sheets.set('2026', new Sheet('2026'));
+    const currentCounselings = new Sheet('counselings');
+    currentCounselings.rows = [
+      ['counselingId', 'graduationYear', 'studentId', 'studentName', 'counseledAt', 'content', 'authorUserId', 'authorName', 'createdAt', 'updatedAt'],
+      ['c-1', '재학생', 'C001', 'Current Student', '2026-02-01T00:00', '상담 기록 보존 확인', 'admin', 'Admin User', '2026-02-01', '2026-02-01'],
+    ];
+    app.sheets.set(currentCounselings.name, currentCounselings);
+    app.setGoogleProfile({ email: 'legacy@example.com', email_verified: true, aud: 'test-client' });
+    const userLogin = app.call({ action: 'googleLogin', accessToken: 'mock-token' });
+    assert.equal(app.call({ action: 'transferCurrentStudent', token: userLogin.token, studentId: 'C001', graduationYear: '2026', status: '미취업자' }).ok, false, 'server enforces administrator role');
+    app.setGoogleProfile({ email: 'admin@example.com', email_verified: true, aud: 'test-client' });
+    const result = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C001', graduationYear: '2026', status: '미취업자' });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(app.call({ action: 'currentStudents', token: adminToken }).students.some(student => student.student_id === 'C001'), false);
+    const graduate = app.call({ action: 'students', token: adminToken, year: '2026' }).students.find(student => student.studentId === 'C001');
+    assert.equal(graduate.status, '미취업자');
+    assert.match(graduate.detail, /이메일: current@example\.com/);
+    assert.equal(currentCounselings.rows[1][1], '2026');
+    assert.equal(app.call({ action: 'counselings', token: adminToken, year: '2026', studentId: 'C001' }).counselings[0].content, '상담 기록 보존 확인');
+    assert.equal(app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C001', graduationYear: '2026', status: '미취업자' }).alreadyCompleted, true, 'a repeated transfer request is idempotent');
+
+    assert.equal(app.call({ action: 'saveCurrentStudent', token: adminToken, create: true, student: { student_id: 'C002', name: 'Retry Student', email: 'retry@example.com' } }).ok, true);
+    const target = app.sheets.get('2026');
+    target.failAppend = true;
+    const failed = app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C002', graduationYear: '2026', status: '취업자' });
+    target.failAppend = false;
+    assert.equal(failed.ok, false);
+    assert.equal(app.call({ action: 'currentStudents', token: adminToken }).students.some(student => student.student_id === 'C002'), true, 'source row survives an append failure');
+    assert.equal(app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C002', graduationYear: '2026', status: '취업자' }).ok, true, 'the rolled back transfer can be retried');
+
+    assert.equal(app.call({ action: 'saveCurrentStudent', token: adminToken, create: true, student: { student_id: 'C003', name: 'Duplicate Student' } }).ok, true);
+    target.appendRow(['2026', 'C003', 'Different Student', '', '', '', '기타', '', '', '', '', '']);
+    assert.equal(app.call({ action: 'transferCurrentStudent', token: adminToken, studentId: 'C003', graduationYear: '2026', status: '기타' }).ok, false, 'an existing graduate ID is not overwritten');
+    assert.equal(app.call({ action: 'currentStudents', token: adminToken }).students.some(student => student.student_id === 'C003'), true);
   });
 
   await t.test('reads students and rejects invalid sheet names', () => {

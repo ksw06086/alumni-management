@@ -1,0 +1,29 @@
+.status-count-card{width:100%;text-align:left;font:inherit;cursor:pointer;transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
+.current-student-toolbar .search{gap:8px}
+.current-student-toolbar .search input{flex:1;width:0;min-width:0}
+.status-count-card:not(.total-card){border-top:3px solid var(--status-accent);background:linear-gradient(150deg,#fff 30%,var(--status-bg));}
+.status-count-card:not(.total-card) span{color:var(--status-fg)}
+.status-count-card:hover{transform:translateY(-2px);box-shadow:0 8px 18px #1e3a6e18;border-color:var(--status-accent)}
+.status-count-card:focus-visible,.sortable-header:focus-visible{outline:3px solid #7697c5;outline-offset:2px}
+.status-badge{color:var(--status-fg);font-weight:700}
+.status-bar-row .bar i{background:var(--status-accent)}
+.design-shell .tag{background:var(--status-bg);color:var(--status-fg)}
+.sortable-header{display:inline-flex;align-items:center;gap:5px;border:0;background:transparent;padding:0;color:inherit;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}
+.sortable-header svg{color:#98a4b5}
+.sortable-header:hover{color:#1e3a6e}
+.current-student-layout{align-items:stretch}
+.current-student-detail{min-width:0}
+.current-counselings{margin:0!important;border:0!important;border-top:1px solid #e8edf3!important;border-radius:0!important;overflow:visible!important}
+.current-student-detail>.current-counselings .panel-title{border:0;padding:17px 20px 10px}
+.current-student-detail>.current-counselings>.empty-detail{padding:24px}
+.current-student-form .form-actions{flex-wrap:wrap}
+.current-student-form .form-actions .transfer-button{border-color:#d4a74a;background:#fff8e6;color:#815c13}
+.current-transfer-backdrop{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:18px;background:#11182772}
+.current-transfer-modal{width:min(500px,100%);max-height:90vh;overflow:auto;border-radius:14px;background:#fff;box-shadow:0 24px 70px #11182745}
+.current-transfer-modal>header{display:flex;align-items:center;justify-content:space-between;padding:18px 21px;border-bottom:1px solid #edf0f4}
+.current-transfer-modal h2{margin:0;color:#213653;font-size:17px}
+.current-transfer-body{display:grid;gap:15px;padding:19px 21px}
+.current-transfer-note{margin:0;padding:12px;border-radius:8px;background:#f7f9fc;color:#5c6c82;font-size:12px;line-height:1.6}
+.current-transfer-modal>footer{display:flex;justify-content:flex-end;gap:8px;padding:13px 21px 18px;border-top:1px solid #edf0f4}
+@media(max-width:760px){.current-student-layout{grid-template-columns:minmax(0,1fr)}.current-student-rows{max-height:360px}.current-student-detail>.panel-title{align-items:flex-start}.current-student-form{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+@media(max-width:560px){.current-student-form{grid-template-columns:minmax(0,1fr);padding:16px}.current-student-form .field.wide,.current-student-form .form-actions{grid-column:1}.current-student-form .form-actions{justify-content:stretch}.current-student-form .form-actions button{flex:1}.current-student-detail>.current-counselings .panel-title{padding:15px 16px 10px}}

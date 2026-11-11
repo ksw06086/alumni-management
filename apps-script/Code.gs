@@ -4,6 +4,8 @@ const SESSION_TTL_SECONDS = 21600;
 const USERS_SHEET = '사용자목록';
 const LOGS_SHEET = 'logs';
 const COUNSELINGS_SHEET = 'counselings';
+const STUDENT_TRANSFERS_SHEET = 'student_transfers';
+const STUDENT_TRANSFER_HEADERS = ['transferId', 'studentId', 'graduationYear', 'state', 'createdAt', 'updatedAt', 'error'];
 const CURRENT_STUDENTS_SHEET = '재학생';
 const CURRENT_STUDENT_HEADERS = ['student_id', 'name', 'birth_date', 'gender', 'phone', 'email', 'affiliation', 'enrollment_status', 'notes', 'created_at', 'updated_at'];
 // 아래 두 일정 탭은 사용자가 만든 한국어 헤더를 검증합니다. SCHEDULE_FIELDS는 프론트엔드에 주는 API 필드명이며 열 순서가 서로 대응해야 합니다.
@@ -45,6 +47,7 @@ function route_(request) {
       case 'saveStudent': return withSession_(request, ['admin', 'user'], session => saveStudent_(session, request));
       case 'deleteStudent': return withSession_(request, ['admin', 'user'], session => deleteStudent_(session, request));
       case 'currentStudents': return withSession_(request, ['admin'], () => ({ ok: true, students: readCurrentStudents_() }));
+      case 'transferCurrentStudent': return withSession_(request, ['admin'], session => transferCurrentStudent_(session, request));
       case 'saveCurrentStudent': return withSession_(request, ['admin'], session => saveCurrentStudent_(session, request));
       case 'currentCounselings': return withSession_(request, ['admin'], () => ({ ok: true, counselings: readCounselings_('재학생', request.studentId) }));
       case 'saveCurrentCounseling': return withSession_(request, ['admin'], session => saveCounseling_(session, Object.assign({}, request, { year: '재학생' })));
@@ -184,7 +187,7 @@ function saveUser_(session, input) {
 }
 
 function listDataSheets_() {
-  return SpreadsheetApp.openById(SPREADSHEET_ID).getSheets().map(sheet => sheet.getName()).filter(name => ![USERS_SHEET, LOGS_SHEET, COUNSELINGS_SHEET, SCHEDULES_SHEET, SCHEDULE_CATEGORIES_SHEET, CURRENT_STUDENTS_SHEET].includes(name));
+  return SpreadsheetApp.openById(SPREADSHEET_ID).getSheets().map(sheet => sheet.getName()).filter(name => ![USERS_SHEET, LOGS_SHEET, COUNSELINGS_SHEET, STUDENT_TRANSFERS_SHEET, SCHEDULES_SHEET, SCHEDULE_CATEGORIES_SHEET, CURRENT_STUDENTS_SHEET].includes(name));
 }
 function getDataSheet_(year) {
   const target = String(year || '').trim();
@@ -234,6 +237,123 @@ function saveCurrentStudent_(session, request) {
 }
 
 // 연도 시트의 학생 CRUD. 컬럼 순서는 DATA_HEADERS와 시트 1행이 일치해야 합니다.
+function transferCurrentStudent_(session, request) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) throw new Error('다른 전환 작업이 진행 중입니다. 잠시 후 다시 시도하세요.');
+  try {
+    const studentId = String(request.studentId || '').trim();
+    const year = String(request.graduationYear || '').trim();
+    const status = String(request.status || '').trim();
+    if (!studentId) throw new Error('전환할 학생을 선택하세요.');
+    if (!/^\d{4}$/.test(year) || listDataSheets_().indexOf(year) < 0) throw new Error('졸업연도 시트를 찾을 수 없습니다. 먼저 해당 연도 시트를 준비하세요.');
+    if (VALID_STATUSES.indexOf(status) < 0) throw new Error('졸업 후 상태를 선택하세요.');
+
+    const sourceSheet = getCurrentStudentsSheet_();
+    const transferSheet = getOrCreateSheet_(STUDENT_TRANSFERS_SHEET, STUDENT_TRANSFER_HEADERS);
+    const targetSheet = getDataSheet_(year);
+    const currentRows = sourceSheet.getDataRange().getValues();
+    const sourceIndex = currentRows.slice(1).findIndex(row => String(row[0]).trim() === studentId);
+    const ledgerRows = transferSheet.getDataRange().getValues();
+    let ledgerIndex = ledgerRows.slice(1).findIndex(row => String(row[1]) === studentId && String(row[2]) === year && String(row[3]) !== 'rolled_back');
+    const targetRows = targetSheet.getDataRange().getValues();
+    let targetIndex = targetRows.slice(1).findIndex(row => String(row[1]).trim() === studentId);
+
+    if (ledgerIndex >= 0 && String(ledgerRows[ledgerIndex + 1][3]) === 'completed') {
+      if (sourceIndex < 0 && targetIndex >= 0) return { ok: true, alreadyCompleted: true, studentId: studentId, graduationYear: year };
+      throw new Error('이 학생의 전환 완료 기록과 시트 데이터가 일치하지 않습니다. 관리자 확인이 필요합니다.');
+    }
+    if (ledgerIndex >= 0 && sourceIndex < 0 && targetIndex >= 0) {
+      const previousState = String(ledgerRows[ledgerIndex + 1][3]);
+      if (!['graduate_saved', 'counselings_moved', 'recovery_required'].includes(previousState)) throw new Error('전환 장부에서 졸업생 저장을 확인할 수 없습니다. 관리자 확인이 필요합니다.');
+      const counselingSheet = getOrCreateSheet_(COUNSELINGS_SHEET, COUNSELING_HEADERS);
+      const counselingRows = counselingSheet.getDataRange().getValues();
+      for (let i = 1; i < counselingRows.length; i++) if (String(counselingRows[i][2]) === studentId && String(counselingRows[i][1]) === '재학생') counselingSheet.getRange(i + 1, 2).setValue(year);
+      const ledgerRow = ledgerIndex + 2;
+      transferSheet.getRange(ledgerRow, 4).setValue('completed');
+      transferSheet.getRange(ledgerRow, 6, 1, 2).setValues([[nowSeoul_(), '재시도에서 졸업생 데이터 확인 후 완료 처리']]);
+      return { ok: true, alreadyCompleted: true, studentId: studentId, graduationYear: year, recoveredAsCompleted: true };
+    }
+    if (sourceIndex < 0) throw new Error('재학생 명단에서 학생을 찾을 수 없습니다.');
+    if (targetIndex >= 0 && ledgerIndex < 0) throw new Error('같은 학번의 졸업생이 이미 있어 중복 전환할 수 없습니다.');
+
+    const sourceRow = currentRows[sourceIndex + 1];
+    const student = Object.fromEntries(CURRENT_STUDENT_HEADERS.map((header, index) => [header, String(sourceRow[index] == null ? '' : sourceRow[index]).trim()]));
+    const preserved = [['생년월일', student.birth_date], ['이메일', student.email], ['소속', student.affiliation], ['재학 상태', student.enrollment_status], ['참고사항', student.notes], ['재학생 최초 등록일', student.created_at], ['재학생 최종 수정일', student.updated_at]].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`);
+    const detail = preserved.length ? `[재학생 전환 시 보존 정보]\n${preserved.join('\n')}` : '';
+    const graduateRow = [year, studentId, student.name, student.gender, student.phone, '', status, '', '', detail, '', nowSeoul_()];
+    const now = nowSeoul_();
+    if (ledgerIndex < 0) {
+      transferSheet.appendRow([Utilities.getUuid(), studentId, year, 'prepared', now, now, '']);
+      ledgerIndex = transferSheet.getLastRow() - 2;
+    }
+    const ledgerRowNumber = ledgerIndex + 2;
+    const writeState = (state, errorText = '') => {
+      transferSheet.getRange(ledgerRowNumber, 4).setValue(state);
+      transferSheet.getRange(ledgerRowNumber, 6, 1, 2).setValues([[nowSeoul_(), errorText]]);
+    };
+    let destinationCreatedOrOwned = false;
+    let sourceRemoved = false;
+    try {
+      if (targetIndex < 0) {
+        destinationCreatedOrOwned = true;
+        targetSheet.appendRow(graduateRow);
+      } else {
+        const existing = targetRows[targetIndex + 1];
+        const priorState = String(ledgerRows[ledgerIndex + 1]?.[3] || 'prepared');
+        const matchesTransfer = String(existing[2]) === student.name && String(existing[3]) === student.gender && String(existing[4]) === student.phone && String(existing[6]) === status && String(existing[9]) === detail;
+        if (!matchesTransfer || !['prepared', 'graduate_saved', 'counselings_moved', 'recovery_required'].includes(priorState)) throw new Error('대상 연도의 기존 졸업생 자료를 동일 전환 건으로 확인할 수 없습니다.');
+        destinationCreatedOrOwned = true;
+      }
+      writeState('graduate_saved');
+      const savedGraduate = targetSheet.getDataRange().getValues().slice(1).find(row => String(row[1]).trim() === studentId);
+      if (!savedGraduate || String(savedGraduate[2]) !== student.name || String(savedGraduate[6]) !== status) throw new Error('졸업생 시트 저장 결과를 확인하지 못했습니다.');
+
+      const counselingSheet = getOrCreateSheet_(COUNSELINGS_SHEET, COUNSELING_HEADERS);
+      const counselingRows = counselingSheet.getDataRange().getValues();
+      const previousLinkedCount = counselingRows.slice(1).filter(row => String(row[2]) === studentId && (String(row[1]) === '재학생' || String(row[1]) === year)).length;
+      for (let i = 1; i < counselingRows.length; i++) if (String(counselingRows[i][2]) === studentId && (String(counselingRows[i][1]) === '재학생' || String(counselingRows[i][1]) === year)) counselingSheet.getRange(i + 1, 2).setValue(year);
+      writeState('counselings_moved');
+      const movedCount = counselingSheet.getDataRange().getValues().slice(1).filter(row => String(row[2]) === studentId && String(row[1]) === year).length;
+      if (movedCount < previousLinkedCount) throw new Error('상담 이력 연결 상태를 확인하지 못했습니다.');
+
+      const latestCurrentRows = sourceSheet.getDataRange().getValues();
+      const latestSourceIndex = latestCurrentRows.slice(1).findIndex(row => String(row[0]).trim() === studentId);
+      if (latestSourceIndex < 0) throw new Error('원본 재학생 데이터를 찾지 못해 전환을 완료할 수 없습니다.');
+      sourceSheet.deleteRow(latestSourceIndex + 2);
+      sourceRemoved = true;
+      writeState('completed');
+      appendLog_(session, '재학생 졸업생 전환', year, studentId, student.name, '졸업생 저장 및 상담 이력 연결을 확인한 뒤 재학생 원본 제거');
+      return { ok: true, studentId: studentId, graduationYear: year };
+    } catch (error) {
+      const sourceStillExists = sourceSheet.getDataRange().getValues().slice(1).some(row => String(row[0]).trim() === studentId);
+      if (sourceRemoved || !sourceStillExists) {
+        const verifiedDestination = targetSheet.getDataRange().getValues().slice(1).some(row => String(row[1]).trim() === studentId && String(row[2]) === student.name && String(row[6]) === status);
+        if (verifiedDestination) {
+          writeState('completed', '원본 삭제 후 응답 처리 오류: ' + (error.message || String(error)));
+          return { ok: true, studentId: studentId, graduationYear: year, recoveredAsCompleted: true };
+        }
+      }
+      let rollbackError = '';
+      try {
+        if (!sourceStillExists) sourceSheet.appendRow(sourceRow);
+        const counselingSheet = getOrCreateSheet_(COUNSELINGS_SHEET, COUNSELING_HEADERS);
+        const values = counselingSheet.getDataRange().getValues();
+        for (let i = 1; i < values.length; i++) if (String(values[i][2]) === studentId && String(values[i][1]) === year) counselingSheet.getRange(i + 1, 2).setValue('재학생');
+        if (destinationCreatedOrOwned) {
+          const graduates = targetSheet.getDataRange().getValues();
+          const ownedIndex = graduates.slice(1).findIndex(row => String(row[1]).trim() === studentId && String(row[2]) === student.name && String(row[9]) === detail);
+          if (ownedIndex >= 0) targetSheet.deleteRow(ownedIndex + 2);
+        }
+        writeState('rolled_back', error.message || String(error));
+      } catch (rollback) {
+        rollbackError = rollback.message || String(rollback);
+        writeState('recovery_required', `${error.message || String(error)} | 복구 실패: ${rollbackError}`);
+      }
+      throw new Error(rollbackError ? `전환이 중단되어 자동 복구가 끝나지 않았습니다. 재학생 원본은 유지했습니다. 관리자 재처리가 필요합니다: ${rollbackError}` : `전환이 취소되어 재학생 원본은 유지했습니다. ${error.message || String(error)}`);
+    }
+  } finally { lock.releaseLock(); }
+}
+
 function saveStudent_(session, request) {
   const year = String(request.year || '').trim();
   const input = request.student || {};

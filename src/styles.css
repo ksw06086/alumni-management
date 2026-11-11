@@ -31,3 +31,30 @@
 .schedule-repeat-note{margin:-5px 0 10px 24px;color:#9aa4b1;font-size:10px}
 .calendar-date.holiday-date{color:#c9473d}.calendar-date.saturday-date{color:#3973ae}.calendar-day.today .calendar-date.holiday-date span{background:#c9473d;color:#fff}.calendar-holiday{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9473d;font-size:9px;line-height:16px;font-weight:700}
 .agenda-holiday{margin:0 18px;padding:11px 0;border-bottom:1px solid #edf0f4;color:#c9473d;font-size:12px;font-weight:700}
+
+/* 연도 선택과 관련 동작을 묶어 공간이 줄면 컨트롤 그룹 단위로 줄바꿈합니다. */
+.filters.year-sheet-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px}
+.year-sheet-toolbar>label{flex:0 0 auto;gap:12px;margin:0;white-space:nowrap}
+.year-sheet-toolbar>label select{width:155px;min-width:0;height:48px;max-width:none}
+.year-sheet-actions{display:flex;flex:1 1 350px;flex-wrap:wrap;align-items:center;gap:10px;min-width:min(100%,350px)}
+.year-sheet-actions>button{display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;gap:8px;height:48px;min-height:48px;margin:0;padding:0 14px;white-space:nowrap}
+@media(max-width:560px){
+  .filters.year-sheet-toolbar{gap:12px;padding:14px 12px}
+  .year-sheet-toolbar>label{gap:8px}
+  .year-sheet-toolbar>label select{width:clamp(120px,42vw,155px)}
+  .year-sheet-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%;min-width:0}
+  .year-sheet-actions>button{width:100%;min-width:0;height:auto;min-height:48px;padding:6px 8px;font-size:12px;line-height:1.25;white-space:normal;text-align:center}
+  .year-sheet-actions>.year-sheet-retry{grid-column:1/-1}
+}
+
+/* 명단 헤더는 제목·인원, 검색, 기능 버튼의 세 줄 구조로 공통 배치합니다. */
+.student-list-header{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"heading total" "search search" ". actions";align-items:center;gap:12px;padding:17px 20px}
+.student-list-header .student-list-heading{grid-area:heading;min-width:0;margin:0;white-space:nowrap}
+.student-list-header .student-list-total{grid-area:total;display:inline-flex;align-items:center;justify-self:end;margin:0;padding:6px 10px;border-radius:16px;background:#f0f4fa;color:#536684;font-size:12px;font-weight:600;white-space:nowrap}
+.student-list-search{grid-area:search;display:flex;align-items:center;gap:9px;width:100%;height:42px;min-width:0;padding:0 12px;border:1px solid #cbd7e7;border-radius:9px;background:#fff;color:#73839f;transition:border-color .16s ease,box-shadow .16s ease}
+.student-list-search:focus-within{border-color:#8299ba;box-shadow:0 0 0 3px #1e3a6e12}
+.student-list-search input{flex:1;width:0;min-width:0;height:40px;padding:8px 2px;border:0;outline:0;background:transparent;color:#253754;font:inherit}
+.student-list-search input::placeholder{color:#8a96a7;opacity:1}
+.student-list-actions{grid-area:actions;display:flex;align-items:center;justify-content:flex-end;gap:10px;min-width:0;margin:0}
+.student-list-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:42px;min-height:42px;margin:0;padding:0 14px;white-space:nowrap}
+@media(max-width:420px){.student-list-header{gap:10px;padding:15px 14px}.student-list-actions{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:8px}.student-list-button{width:100%;padding:0 8px}}
